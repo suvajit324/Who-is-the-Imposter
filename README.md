@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Who's the Imposter?
 
 A real-time private-room social deduction game built with React, Vite, TypeScript, Express, Socket.IO, Zod, and optional MongoDB persistence.
@@ -134,3 +135,6 @@ This repo includes `render.yaml` for a Render Blueprint web service. After pushi
 - Voice chat, public matchmaking, authentication, multiple Imposters, and AI-generated words are intentionally out of scope.
 - Completed-game persistence is available only when MongoDB is configured.
 - The Imposter guess opportunity is available during the round-result screen when the Imposter was correctly identified.
+=======
+# Who-is-the-Imposter
+>>>>>>> 45159dc7dab3db9187cb337a2a7844fef4eaaf91
