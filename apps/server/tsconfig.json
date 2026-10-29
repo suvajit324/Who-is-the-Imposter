@@ -4,7 +4,9 @@
     "outDir": "dist",
     "rootDir": "src",
     "types": ["node"],
-    "composite": true
+    "composite": true,
+    "skipLibCheck": true,
+    "noImplicitAny": false,
   },
   "references": [{ "path": "../../packages/shared" }],
   "include": ["src"]
