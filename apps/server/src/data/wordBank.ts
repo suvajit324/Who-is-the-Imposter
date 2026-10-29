@@ -1,0 +1,75 @@
+import type { Difficulty, WordCategory } from "@imposter/shared";
+
+export type WordPair = {
+  id: string;
+  wordA: string;
+  wordB: string;
+  category: WordCategory;
+  difficulty: Difficulty;
+  tags: string[];
+};
+
+export const fallbackWordBank: WordPair[] = [
+  { id: "food-01", wordA: "Pizza", wordB: "Burger", category: "Food", difficulty: "Easy", tags: ["fast-food"] },
+  { id: "food-02", wordA: "Coffee", wordB: "Tea", category: "Food", difficulty: "Easy", tags: ["drink"] },
+  { id: "food-03", wordA: "Pasta", wordB: "Noodles", category: "Food", difficulty: "Easy", tags: ["dinner"] },
+  { id: "food-04", wordA: "Cupcake", wordB: "Donut", category: "Food", difficulty: "Easy", tags: ["dessert"] },
+  { id: "food-05", wordA: "Sushi", wordB: "Taco", category: "Food", difficulty: "Medium", tags: ["takeout"] },
+  { id: "food-06", wordA: "Pancake", wordB: "Waffle", category: "Food", difficulty: "Easy", tags: ["breakfast"] },
+  { id: "food-07", wordA: "Mango", wordB: "Pineapple", category: "Food", difficulty: "Easy", tags: ["fruit"] },
+  { id: "animals-01", wordA: "Lion", wordB: "Tiger", category: "Animals", difficulty: "Easy", tags: ["big-cat"] },
+  { id: "animals-02", wordA: "Dolphin", wordB: "Whale", category: "Animals", difficulty: "Easy", tags: ["ocean"] },
+  { id: "animals-03", wordA: "Eagle", wordB: "Falcon", category: "Animals", difficulty: "Medium", tags: ["bird"] },
+  { id: "animals-04", wordA: "Rabbit", wordB: "Hamster", category: "Animals", difficulty: "Easy", tags: ["small"] },
+  { id: "animals-05", wordA: "Crocodile", wordB: "Alligator", category: "Animals", difficulty: "Hard", tags: ["reptile"] },
+  { id: "animals-06", wordA: "Horse", wordB: "Donkey", category: "Animals", difficulty: "Easy", tags: ["farm"] },
+  { id: "animals-07", wordA: "Penguin", wordB: "Seal", category: "Animals", difficulty: "Medium", tags: ["polar"] },
+  { id: "sports-01", wordA: "Cricket", wordB: "Baseball", category: "Sports", difficulty: "Medium", tags: ["bat"] },
+  { id: "sports-02", wordA: "Football", wordB: "Rugby", category: "Sports", difficulty: "Medium", tags: ["field"] },
+  { id: "sports-03", wordA: "Tennis", wordB: "Badminton", category: "Sports", difficulty: "Easy", tags: ["racket"] },
+  { id: "sports-04", wordA: "Basketball", wordB: "Volleyball", category: "Sports", difficulty: "Easy", tags: ["ball"] },
+  { id: "sports-05", wordA: "Chess", wordB: "Carrom", category: "Sports", difficulty: "Medium", tags: ["indoor"] },
+  { id: "sports-06", wordA: "Swimming", wordB: "Diving", category: "Sports", difficulty: "Easy", tags: ["water"] },
+  { id: "sports-07", wordA: "Boxing", wordB: "Wrestling", category: "Sports", difficulty: "Medium", tags: ["combat"] },
+  { id: "movies-01", wordA: "Cinema", wordB: "Theatre", category: "Movies", difficulty: "Easy", tags: ["screen"] },
+  { id: "movies-02", wordA: "Hero", wordB: "Villain", category: "Movies", difficulty: "Easy", tags: ["role"] },
+  { id: "movies-03", wordA: "Trailer", wordB: "Teaser", category: "Movies", difficulty: "Medium", tags: ["promo"] },
+  { id: "movies-04", wordA: "Comedy", wordB: "Sitcom", category: "Movies", difficulty: "Easy", tags: ["funny"] },
+  { id: "movies-05", wordA: "Director", wordB: "Producer", category: "Movies", difficulty: "Medium", tags: ["crew"] },
+  { id: "movies-06", wordA: "Sequel", wordB: "Remake", category: "Movies", difficulty: "Hard", tags: ["series"] },
+  { id: "places-01", wordA: "Beach", wordB: "Island", category: "Places", difficulty: "Easy", tags: ["vacation"] },
+  { id: "places-02", wordA: "Library", wordB: "Bookstore", category: "Places", difficulty: "Easy", tags: ["books"] },
+  { id: "places-03", wordA: "Airport", wordB: "Station", category: "Places", difficulty: "Easy", tags: ["travel"] },
+  { id: "places-04", wordA: "Museum", wordB: "Gallery", category: "Places", difficulty: "Medium", tags: ["art"] },
+  { id: "places-05", wordA: "Mountain", wordB: "Hill", category: "Places", difficulty: "Easy", tags: ["nature"] },
+  { id: "places-06", wordA: "Hostel", wordB: "Dormitory", category: "Places", difficulty: "Medium", tags: ["college"] },
+  { id: "places-07", wordA: "Market", wordB: "Mall", category: "Places", difficulty: "Easy", tags: ["shopping"] },
+  { id: "objects-01", wordA: "Laptop", wordB: "Tablet", category: "Objects", difficulty: "Easy", tags: ["device"] },
+  { id: "objects-02", wordA: "Backpack", wordB: "Suitcase", category: "Objects", difficulty: "Easy", tags: ["bag"] },
+  { id: "objects-03", wordA: "Umbrella", wordB: "Raincoat", category: "Objects", difficulty: "Easy", tags: ["rain"] },
+  { id: "objects-04", wordA: "Mirror", wordB: "Window", category: "Objects", difficulty: "Medium", tags: ["glass"] },
+  { id: "objects-05", wordA: "Notebook", wordB: "Diary", category: "Objects", difficulty: "Easy", tags: ["paper"] },
+  { id: "objects-06", wordA: "Key", wordB: "Password", category: "Objects", difficulty: "Medium", tags: ["access"] },
+  { id: "tech-01", wordA: "Browser", wordB: "Search", category: "Technology", difficulty: "Easy", tags: ["web"] },
+  { id: "tech-02", wordA: "Robot", wordB: "Drone", category: "Technology", difficulty: "Medium", tags: ["machine"] },
+  { id: "tech-03", wordA: "Server", wordB: "Cloud", category: "Technology", difficulty: "Medium", tags: ["backend"] },
+  { id: "tech-04", wordA: "Password", wordB: "Passkey", category: "Technology", difficulty: "Hard", tags: ["security"] },
+  { id: "tech-05", wordA: "Keyboard", wordB: "Mouse", category: "Technology", difficulty: "Easy", tags: ["input"] },
+  { id: "tech-06", wordA: "Camera", wordB: "Scanner", category: "Technology", difficulty: "Medium", tags: ["capture"] },
+  { id: "prof-01", wordA: "Doctor", wordB: "Nurse", category: "Professions", difficulty: "Easy", tags: ["hospital"] },
+  { id: "prof-02", wordA: "Teacher", wordB: "Professor", category: "Professions", difficulty: "Easy", tags: ["education"] },
+  { id: "prof-03", wordA: "Chef", wordB: "Baker", category: "Professions", difficulty: "Easy", tags: ["food"] },
+  { id: "prof-04", wordA: "Pilot", wordB: "Captain", category: "Professions", difficulty: "Medium", tags: ["travel"] },
+  { id: "prof-05", wordA: "Engineer", wordB: "Architect", category: "Professions", difficulty: "Medium", tags: ["build"] },
+  { id: "prof-06", wordA: "Lawyer", wordB: "Judge", category: "Professions", difficulty: "Medium", tags: ["court"] },
+  { id: "college-01", wordA: "Lecture", wordB: "Seminar", category: "College", difficulty: "Medium", tags: ["class"] },
+  { id: "college-02", wordA: "Exam", wordB: "Quiz", category: "College", difficulty: "Easy", tags: ["test"] },
+  { id: "college-03", wordA: "Assignment", wordB: "Project", category: "College", difficulty: "Easy", tags: ["work"] },
+  { id: "college-04", wordA: "Canteen", wordB: "Cafeteria", category: "College", difficulty: "Easy", tags: ["food"] },
+  { id: "college-05", wordA: "Internship", wordB: "Placement", category: "College", difficulty: "Medium", tags: ["career"] },
+  { id: "college-06", wordA: "Freshers", wordB: "Farewell", category: "College", difficulty: "Medium", tags: ["event"] },
+  { id: "college-07", wordA: "Hostel", wordB: "Apartment", category: "College", difficulty: "Easy", tags: ["living"] },
+  { id: "movies-07", wordA: "Soundtrack", wordB: "Playlist", category: "Movies", difficulty: "Medium", tags: ["music"] },
+  { id: "places-08", wordA: "Temple", wordB: "Monument", category: "Places", difficulty: "Medium", tags: ["heritage"] },
+  { id: "objects-07", wordA: "Wallet", wordB: "Purse", category: "Objects", difficulty: "Easy", tags: ["carry"] }
+];

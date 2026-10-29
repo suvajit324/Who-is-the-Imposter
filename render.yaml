@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: whos-the-imposter-server
+    env: node
+    plan: free
+    rootDir: .
+    buildCommand: npm ci && npm run build -w @imposter/shared && npm run build -w @imposter/server
+    startCommand: npm run start -w @imposter/server
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CLIENT_ORIGIN
+        sync: false
+      - key: MONGODB_URI
+        sync: false

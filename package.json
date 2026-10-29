@@ -1,0 +1,23 @@
+{
+  "name": "whos-the-imposter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev -w @imposter/server\" \"npm:dev -w @imposter/web\"",
+    "build": "npm run build -w @imposter/shared && npm run build -w @imposter/server && npm run build -w @imposter/web",
+    "test": "npm run test -w @imposter/server && npm run test -w @imposter/web",
+    "typecheck": "npm run build -w @imposter/shared && npm run typecheck -w @imposter/server && npm run typecheck -w @imposter/web",
+    "seed": "npm run seed -w @imposter/server",
+    "lint": "npm run lint -ws --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3"
+  }
+}
