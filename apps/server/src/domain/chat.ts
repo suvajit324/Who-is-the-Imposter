@@ -17,13 +17,20 @@ type SenderState = {
   recentSends: number[];
   lastText: string | null;
   lastTextAt: number;
-  /** clientMessageId -> stored message, for idempotent retries after a lost ack. */
-  seenClientIds: Map<string, ChatMessage>;
+  /** clientMessageId -> stored outcome, for idempotent retries after a lost ack. */
+  seenClientIds: Map<string, ChatPostResult>;
 };
 
 export type ChatPostResult =
   | { ok: true; message: ChatMessage; duplicate: boolean }
   | { ok: false; message: string };
+
+/**
+ * Optional final check before a message is accepted (used for moderation). Runs after
+ * validation and rate limiting, and before the message is stored or broadcast.
+ * `cacheable` rejections are replayed for a retried clientMessageId instead of re-running.
+ */
+export type ChatScreen = (text: string) => { allow: true } | { allow: false; message: string; cacheable: boolean };
 
 /**
  * ChatService for a single room. Holds an ordered, capped message log and
@@ -54,12 +61,13 @@ export class RoomChat {
     this.senders.clear();
   }
 
-  postPlayer(sender: Sender, rawText: unknown, clientMessageId: string): ChatPostResult {
+  postPlayer(sender: Sender, rawText: unknown, clientMessageId: string, screen?: ChatScreen): ChatPostResult {
     const state = this.senderState(sender.id);
 
-    // Idempotency: a retry of an already-accepted submission returns the original message.
+    // Idempotency: a retry of an already-handled submission returns the original outcome
+    // (the stored message, or the same moderation rejection without counting it twice).
     const previous = state.seenClientIds.get(clientMessageId);
-    if (previous) return { ok: true, message: previous, duplicate: true };
+    if (previous) return previous.ok ? { ...previous, duplicate: true } : previous;
 
     const validation = validateChatText(rawText);
     if (!validation.ok) return validation;
@@ -77,16 +85,31 @@ export class RoomChat {
       return { ok: false, message: "You just sent that message." };
     }
 
-    const message = this.append("player", sender, validation.text);
+    // Every screened attempt counts toward the rate limit, so rejected messages cannot be
+    // used to hammer the moderation path any faster than ordinary chat.
     state.recentSends.push(now);
+    if (screen) {
+      const verdict = screen(validation.text);
+      if (!verdict.allow) {
+        const rejected: ChatPostResult = { ok: false, message: verdict.message };
+        if (verdict.cacheable) this.remember(state, clientMessageId, rejected);
+        return rejected;
+      }
+    }
+
+    const message = this.append("player", sender, validation.text);
     state.lastText = validation.text;
     state.lastTextAt = now;
-    state.seenClientIds.set(clientMessageId, message);
+    this.remember(state, clientMessageId, { ok: true, message, duplicate: false });
+    return { ok: true, message, duplicate: false };
+  }
+
+  private remember(state: SenderState, clientMessageId: string, result: ChatPostResult): void {
+    state.seenClientIds.set(clientMessageId, result);
     if (state.seenClientIds.size > CLIENT_ID_MEMORY) {
       const oldest = state.seenClientIds.keys().next().value;
       if (oldest !== undefined) state.seenClientIds.delete(oldest);
     }
-    return { ok: true, message, duplicate: false };
   }
 
   postSystem(text: string): ChatMessage {

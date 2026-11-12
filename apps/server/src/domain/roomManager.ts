@@ -20,6 +20,7 @@ import {
   type VoteOutcome
 } from "@imposter/shared";
 import { fallbackWordBank, type WordPair } from "../data/wordBank.js";
+import { ChatModerationGate, createModerationEngine, defaultModerationPolicy, type ModerationEngine, type ModerationPolicy } from "../moderation/index.js";
 import { RoomChat } from "./chat.js";
 import { validateClue } from "./clues.js";
 import { selectImposter } from "./imposter.js";
@@ -74,6 +75,7 @@ type Room = {
   createdAt: number;
   lastEntryAtByIp: Map<string, number>;
   chat: RoomChat;
+  moderation: ChatModerationGate;
 };
 
 type Persistence = {
@@ -92,11 +94,18 @@ const CLUE_TEXT_HIDDEN_PHASES: GamePhase[] = ["ROLE_ASSIGNMENT", "CLUE_PHASE"];
 export class RoomManager {
   private rooms = new Map<string, Room>();
 
+  private readonly moderationEngine: ModerationEngine;
+  private readonly moderationPolicy: ModerationPolicy;
+
   constructor(
     private readonly io: GameServer,
     private readonly persistence: Persistence,
-    private readonly wordBank = fallbackWordBank
-  ) {}
+    private readonly wordBank = fallbackWordBank,
+    options: { moderationPolicy?: ModerationPolicy } = {}
+  ) {
+    this.moderationEngine = createModerationEngine({ bankWords: wordBank.flatMap((pair) => [pair.wordA, pair.wordB]) });
+    this.moderationPolicy = options.moderationPolicy ?? defaultModerationPolicy;
+  }
 
   createRoom(socket: GameSocket, playerName: string, ip = "unknown"): CreateRoomAck {
     if (this.tooSoon(ip)) return { ok: false, message: "Please wait a moment before creating another room." };
@@ -118,7 +127,8 @@ export class RoomManager {
       cancelledReason: null,
       createdAt: Date.now(),
       lastEntryAtByIp: new Map([[ip, Date.now()]]),
-      chat: new RoomChat(code)
+      chat: new RoomChat(code),
+      moderation: new ChatModerationGate(this.moderationEngine, this.moderationPolicy)
     };
     this.rooms.set(code, room);
     this.attachSocket(socket, room, player);
@@ -330,6 +340,7 @@ export class RoomManager {
     }
     // A rematch is a genuinely new game: start a fresh chat log.
     room.chat.reset();
+    room.moderation.reset();
     this.io.to(room.code).emit("chat:history", room.chat.history());
     this.broadcast(room);
     this.postSystem(room, "A new game has been set up. Get ready!");
@@ -350,7 +361,12 @@ export class RoomManager {
       };
     }
     // Sender identity always comes from the verified socket session, never from the payload.
-    const result = room.chat.postPlayer({ id: player.id, name: player.name }, text, clientMessageId);
+    // Moderation runs before anything is stored or broadcast, and only against the words this
+    // sender already knows (taken from trusted server state), so its verdict cannot leak the other word.
+    const knownWords = this.knownSecretWords(room, player);
+    const result = room.chat.postPlayer({ id: player.id, name: player.name }, text, clientMessageId, (screenedText) =>
+      room.moderation.screen({ playerId: player.id, roundNumber: room.roundNumber, knownWords, text: screenedText, now: Date.now() })
+    );
     if (!result.ok) return result;
     if (!result.duplicate) this.io.to(room.code).emit("chat:message", result.message);
     return { ok: true, chatMessage: result.message };
@@ -615,6 +631,15 @@ export class RoomManager {
 
   private broadcast(room: Room): void {
     this.io.to(room.code).emit("room:state", this.publicState(room));
+  }
+
+  /**
+   * The secret words a player legitimately knows this round: their own word only.
+   * (Written as a list so a future multi-Imposter mode can return several.)
+   */
+  private knownSecretWords(room: Room, player: Player): string[] {
+    if (!room.round) return [];
+    return [player.id === room.round.imposterId ? room.round.imposterWord : room.round.normalWord];
   }
 
   private postSystem(room: Room, text: string): void {
