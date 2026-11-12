@@ -351,7 +351,7 @@ function CluePhase({ state, me, secret, send }: { state: PublicRoomState; me: Pu
         <Input label="Clue" value={clue} disabled={submitted} maxLength={24} onChange={(event) => setClue(event.target.value)} placeholder="Type a one-word clue" />
         <Button disabled={submitted || !clue.trim()} onClick={() => send("clue:submit", { clue }, () => setClue(""))}><Send size={18} />Submit</Button>
       </div>
-      <ClueList clues={state.clues} players={state.players} />
+      <ClueList players={state.players} />
     </Panel>
   );
 }
@@ -400,7 +400,7 @@ function RoundResultView({ state, secret, host, send }: { state: PublicRoomState
       <h2>{result.correct ? "The group caught the Imposter" : "The Imposter escaped"}</h2>
       <div className="result-grid">
         <Stat label="Imposter" value={result.imposterName} />
-        <Stat label="Main word" value={result.mainWord} />
+        <Stat label="Main word" value={result.mainWord ?? "Hidden until the Imposter guesses"} />
         <Stat label="Imposter word" value={result.imposterWord} />
         <Stat label="Accused" value={result.selectedPlayerName ?? "No one"} />
       </div>
@@ -426,17 +426,18 @@ function GameEnd({ state, host, send }: { state: PublicRoomState; host: boolean;
       <p className="winner">{winners} {winners.includes(",") ? "share" : "wins"} rank 1.</p>
       <Leaderboard players={state.players} />
       <div className="history">
-        {state.roundHistory.map((round) => <p key={round.roundNumber}>Round {round.roundNumber}: {round.imposterName} was the Imposter, word pair {round.mainWord}/{round.imposterWord}.</p>)}
+        {state.roundHistory.map((round) => <p key={round.roundNumber}>Round {round.roundNumber}: {round.imposterName} was the Imposter, word pair {round.mainWord ?? "?"}/{round.imposterWord}.</p>)}
       </div>
       {host && <Button onClick={() => send("game:rematch", {})}><RefreshCw size={18} />Rematch</Button>}
     </Panel>
   );
 }
 
-function ClueList({ clues, players }: { clues: PublicRoomState["clues"]; players: PublicPlayer[] }) {
+function ClueList({ players }: { players: PublicPlayer[] }) {
+  // Clue text stays hidden on the server until the clue phase ends, so only show who has submitted.
   return (
     <div className="status-list">
-      {players.map((player) => <Badge key={player.id} tone={clues.find((clue) => clue.playerId === player.id)?.clue ? "green" : "muted"}>{player.name}</Badge>)}
+      {players.map((player) => <Badge key={player.id} tone={player.submittedClue ? "green" : "muted"}>{player.name}</Badge>)}
     </div>
   );
 }

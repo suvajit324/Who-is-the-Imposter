@@ -97,7 +97,8 @@ export type RoundResult = {
   roundNumber: number;
   imposterId: string;
   imposterName: string;
-  mainWord: string;
+  /** Null while a caught Imposter can still guess it; revealed after the guess or when the round advances. */
+  mainWord: string | null;
   imposterWord: string;
   selectedPlayerId: string | null;
   selectedPlayerName: string | null;

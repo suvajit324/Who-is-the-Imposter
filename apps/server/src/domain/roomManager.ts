@@ -25,7 +25,7 @@ import { validateClue } from "./clues.js";
 import { selectImposter } from "./imposter.js";
 import { calculateScores } from "./scoring.js";
 import { resolveVotes, validateVote } from "./voting.js";
-import { selectWordPair } from "./words.js";
+import { matchingWordPairs, selectWordPair } from "./words.js";
 
 type GameSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
 type GameServer = Server<ClientToServerEvents, ServerToClientEvents>;
@@ -54,6 +54,7 @@ type RoundState = {
   runoffVotes: Map<string, string>;
   runoffCandidateIds: string[];
   result: RoundResult | null;
+  rejectedClueAttempts: Map<string, number>;
 };
 
 type Room = {
@@ -83,6 +84,10 @@ type Persistence = {
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROLE_REVEAL_SECONDS = 12;
 const RECONNECT_GRACE_MS = 60_000;
+/** Rejected clue submissions allowed per player per round (limits probing via validation errors). */
+export const MAX_REJECTED_CLUE_ATTEMPTS = 8;
+/** Phases in which submitted clue text must stay hidden from other players. */
+const CLUE_TEXT_HIDDEN_PHASES: GamePhase[] = ["ROLE_ASSIGNMENT", "CLUE_PHASE"];
 
 export class RoomManager {
   private rooms = new Map<string, Room>();
@@ -206,6 +211,9 @@ export class RoomManager {
     const connected = this.connectedPlayers(room);
     if (connected.length < MIN_PLAYERS) return { ok: false, message: "At least three players are required." };
     if (!connected.every((candidate) => candidate.host || candidate.ready)) return { ok: false, message: "All connected players must be ready." };
+    if (matchingWordPairs(this.wordBank, room.settings).length === 0) {
+      return { ok: false, message: "No word pairs match this category and difficulty. Choose a different combination." };
+    }
     this.beginRound(room);
     return { ok: true };
   }
@@ -228,8 +236,16 @@ export class RoomManager {
     if (room.phase !== "CLUE_PHASE" || !room.round) return { ok: false, message: "Clues are not open right now." };
     if (Date.now() > (room.deadline ?? 0)) return { ok: false, message: "The clue deadline has passed." };
     if (room.round.clues.has(player.id)) return { ok: false, message: "You already submitted a clue." };
-    const error = validateClue(clue, [...room.round.clues.values()], [room.round.normalWord, room.round.imposterWord]);
-    if (error) return { ok: false, message: error };
+    const rejected = room.round.rejectedClueAttempts.get(player.id) ?? 0;
+    if (rejected >= MAX_REJECTED_CLUE_ATTEMPTS) return { ok: false, message: "Too many invalid clue attempts this round." };
+    // Only the player's own word is forbidden. Checking the *other* word would let players
+    // probe it: a rejection would confirm a guess (e.g. the Imposter discovering the main word).
+    const ownWord = player.id === room.round.imposterId ? room.round.imposterWord : room.round.normalWord;
+    const error = validateClue(clue, [...room.round.clues.values()], [ownWord]);
+    if (error) {
+      room.round.rejectedClueAttempts.set(player.id, rejected + 1);
+      return { ok: false, message: error };
+    }
     room.round.clues.set(player.id, clue.trim());
     if (this.connectedPlayers(room).every((candidate) => room.round?.clues.has(candidate.id))) {
       this.advanceAfterClues(room);
@@ -278,7 +294,7 @@ export class RoomManager {
       player.score += 2;
     }
     this.broadcast(room);
-    this.io.to(room.code).emit("round:result", result);
+    this.io.to(room.code).emit("round:result", this.publicResult(room, result));
     return { ok: true };
   }
 
@@ -296,6 +312,7 @@ export class RoomManager {
     const context = this.context(socket);
     if (!context) return { ok: false, message: "Join a room first." };
     if (!context.player.host) return { ok: false, message: "Only the host can start a rematch." };
+    if (!["GAME_END", "CANCELLED"].includes(context.room.phase)) return { ok: false, message: "A rematch can only start after the game ends." };
     const room = context.room;
     this.clearTimer(room);
     room.phase = "LOBBY";
@@ -373,10 +390,10 @@ export class RoomManager {
       this.cancelRoom(room, "At least three connected players are required.");
       return;
     }
+    const pair = selectWordPair(this.wordBank, room.settings, room.usedWordPairIds);
     room.roundNumber += 1;
     const imposterId = selectImposter(players.map((player) => player.id), room.imposterCounts);
     room.imposterCounts[imposterId] = (room.imposterCounts[imposterId] ?? 0) + 1;
-    const pair = selectWordPair(this.wordBank, room.settings, room.usedWordPairIds);
     room.usedWordPairIds.add(pair.id);
     const flip = Math.random() >= 0.5;
     room.round = {
@@ -389,7 +406,8 @@ export class RoomManager {
       votes: new Map(),
       runoffVotes: new Map(),
       runoffCandidateIds: [],
-      result: null
+      result: null,
+      rejectedClueAttempts: new Map()
     };
     for (const player of room.players.values()) player.roleAcked = false;
     room.phase = "ROLE_ASSIGNMENT";
@@ -492,7 +510,7 @@ export class RoomManager {
     room.round.result = result;
     room.roundHistory.push(result);
     this.broadcast(room);
-    this.io.to(room.code).emit("round:result", result);
+    this.io.to(room.code).emit("round:result", this.publicResult(room, result));
   }
 
   private endGame(room: Room): void {
@@ -550,20 +568,31 @@ export class RoomManager {
       voteSubmittedCount: this.currentVoteMap(room).size,
       voteEligibleCount: this.eligiblePlayerIds(room).length,
       runoffCandidateIds: room.round?.runoffCandidateIds ?? [],
-      latestResult: room.round?.result ?? null,
-      roundHistory: room.roundHistory,
+      latestResult: room.round?.result ? this.publicResult(room, room.round.result) : null,
+      roundHistory: room.roundHistory.map((result) => this.publicResult(room, result)),
       cancelledReason: room.cancelledReason,
       persistenceEnabled: this.persistence.enabled
     };
   }
 
+  /**
+   * Public view of a round result. While a caught Imposter may still guess the main word,
+   * the main word is withheld, otherwise the Imposter could read the answer off the result.
+   */
+  private publicResult(room: Room, result: RoundResult): RoundResult {
+    const guessPending = room.phase === "VOTE_RESULT" && room.round?.result === result && result.correct && result.imposterGuess === null;
+    return guessPending ? { ...result, mainWord: null } : result;
+  }
+
   private publicClues(room: Room): PublicClue[] {
     const round = room.round;
     if (!round) return [];
+    // Clue text is secret until everyone has submitted; only submission status is public before that.
+    const hideText = CLUE_TEXT_HIDDEN_PHASES.includes(room.phase);
     return [...room.players.values()].map((player) => ({
       playerId: player.id,
       playerName: player.name,
-      clue: round.clues.get(player.id) ?? null,
+      clue: hideText ? null : round.clues.get(player.id) ?? null,
       missed: ["DISCUSSION", "VOTING", "RUNOFF_VOTING", "VOTE_RESULT", "GAME_END"].includes(room.phase) && !round.clues.has(player.id)
     }));
   }
