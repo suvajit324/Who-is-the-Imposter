@@ -1,5 +1,6 @@
 import type { Server, Socket } from "socket.io";
 import {
+  chatSendSchema,
   clueSchema,
   createRoomSchema,
   imposterGuessSchema,
@@ -84,6 +85,19 @@ export function registerHandlers(io: GameServer, roomManager: RoomManager): void
 
     socket.on("game:rematch", (_payload, ack) => {
       ack(roomManager.rematch(socket));
+    });
+
+    socket.on("chat:send", (payload, ack) => {
+      if (typeof ack !== "function") return;
+      // Only `text` and `clientMessageId` are read; any sender name/id in the payload is discarded.
+      const parsed = chatSendSchema.safeParse(payload);
+      if (!parsed.success) return ack({ ok: false, message: "That message could not be sent." });
+      ack(roomManager.sendChat(socket, parsed.data.text, parsed.data.clientMessageId));
+    });
+
+    socket.on("chat:history", (_payload, ack) => {
+      if (typeof ack !== "function") return;
+      ack(roomManager.chatHistory(socket));
     });
 
     socket.on("disconnect", () => {

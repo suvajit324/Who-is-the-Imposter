@@ -5,6 +5,8 @@ import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   type BasicAck,
+  type ChatHistoryAck,
+  type ChatSendAck,
   type CreateRoomAck,
   type GamePhase,
   type GameSettings,
@@ -18,6 +20,7 @@ import {
   type VoteOutcome
 } from "@imposter/shared";
 import { fallbackWordBank, type WordPair } from "../data/wordBank.js";
+import { RoomChat } from "./chat.js";
 import { validateClue } from "./clues.js";
 import { selectImposter } from "./imposter.js";
 import { calculateScores } from "./scoring.js";
@@ -69,6 +72,7 @@ type Room = {
   cancelledReason: string | null;
   createdAt: number;
   lastEntryAtByIp: Map<string, number>;
+  chat: RoomChat;
 };
 
 type Persistence = {
@@ -108,10 +112,12 @@ export class RoomManager {
       phaseNonce: 0,
       cancelledReason: null,
       createdAt: Date.now(),
-      lastEntryAtByIp: new Map([[ip, Date.now()]])
+      lastEntryAtByIp: new Map([[ip, Date.now()]]),
+      chat: new RoomChat(code)
     };
     this.rooms.set(code, room);
     this.attachSocket(socket, room, player);
+    this.postSystem(room, `${player.name} created the room.`);
     return { ok: true, roomCode: code, playerId: player.id, reconnectToken: player.reconnectToken, state: this.publicState(room) };
   }
 
@@ -128,6 +134,7 @@ export class RoomManager {
     room.lastEntryAtByIp.set(ip, Date.now());
     this.attachSocket(socket, room, player);
     this.broadcast(room);
+    this.postSystem(room, `${player.name} joined the room.`);
     return { ok: true, roomCode: room.code, playerId: player.id, reconnectToken: player.reconnectToken, state: this.publicState(room) };
   }
 
@@ -137,12 +144,14 @@ export class RoomManager {
     if (!room || !player || !this.tokenMatches(player.reconnectToken, token)) {
       return { ok: false, message: "Reconnect failed. Please rejoin from the lobby if the game has not started." };
     }
+    const wasDisconnected = !player.connected;
     player.socketId = socket.id;
     player.connected = true;
     player.disconnectedAt = null;
     this.attachSocket(socket, room, player);
     this.broadcast(room);
     this.sendSecretIfActive(room, player);
+    if (wasDisconnected) this.postSystem(room, `${player.name} reconnected.`);
     return { ok: true, roomCode: room.code, playerId: player.id, reconnectToken: player.reconnectToken, state: this.publicState(room) };
   }
 
@@ -178,8 +187,13 @@ export class RoomManager {
     const target = context.room.players.get(targetPlayerId);
     if (!target) return { ok: false, message: "Player not found." };
     context.room.players.delete(target.id);
-    if (target.socketId) this.io.to(target.socketId).emit("room:error", "You were removed from the room.");
+    if (target.socketId) {
+      this.io.to(target.socketId).emit("room:error", "You were removed from the room.");
+      // Stop the removed player's socket from receiving this room's broadcasts (state and chat).
+      this.io.in(target.socketId).socketsLeave(context.room.code);
+    }
     this.broadcast(context.room);
+    this.postSystem(context.room, `${target.name} was removed by the host.`);
     return { ok: true };
   }
 
@@ -297,8 +311,38 @@ export class RoomManager {
       player.ready = player.host;
       player.roleAcked = false;
     }
+    // A rematch is a genuinely new game: start a fresh chat log.
+    room.chat.reset();
+    this.io.to(room.code).emit("chat:history", room.chat.history());
     this.broadcast(room);
+    this.postSystem(room, "A new game has been set up. Get ready!");
     return { ok: true };
+  }
+
+  sendChat(socket: GameSocket, text: string, clientMessageId: string): ChatSendAck {
+    const context = this.context(socket);
+    if (!context) return { ok: false, message: "Join a room first." };
+    const { room, player } = context;
+    // Authoritative phase check: chat is only writable during discussion.
+    if (room.phase !== "DISCUSSION") {
+      return {
+        ok: false,
+        message: ["VOTING", "RUNOFF_VOTING"].includes(room.phase)
+          ? "Voting has started. Chat is now closed."
+          : "Chat is only open during the discussion phase."
+      };
+    }
+    // Sender identity always comes from the verified socket session, never from the payload.
+    const result = room.chat.postPlayer({ id: player.id, name: player.name }, text, clientMessageId);
+    if (!result.ok) return result;
+    if (!result.duplicate) this.io.to(room.code).emit("chat:message", result.message);
+    return { ok: true, chatMessage: result.message };
+  }
+
+  chatHistory(socket: GameSocket): ChatHistoryAck {
+    const context = this.context(socket);
+    if (!context) return { ok: false, message: "Join a room first." };
+    return { ok: true, ...context.room.chat.history() };
   }
 
   disconnect(socket: GameSocket): void {
@@ -309,6 +353,7 @@ export class RoomManager {
     player.socketId = null;
     player.disconnectedAt = Date.now();
     socket.leave(room.code);
+    this.postSystem(room, `${player.name} disconnected.`);
     if (room.phase === "LOBBY") {
       this.scheduleLobbyRemoval(room, player.id);
     } else {
@@ -365,18 +410,26 @@ export class RoomManager {
     if (room.settings.discussionEnabled && room.settings.discussionSeconds > 0) {
       room.phase = "DISCUSSION";
       this.setDeadline(room, room.settings.discussionSeconds, () => this.startVoting(room));
-    } else {
-      this.startVoting(room);
+      this.broadcast(room);
+      this.postSystem(
+        room,
+        room.roundNumber <= 1
+          ? "Discussion has started. Chat is open."
+          : `Round ${room.roundNumber} discussion has started. Chat is open.`
+      );
+      return;
     }
-    this.broadcast(room);
+    this.startVoting(room);
   }
 
   private startVoting(room: Room): void {
     if (!["CLUE_PHASE", "DISCUSSION"].includes(room.phase)) return;
+    const chatWasOpen = room.phase === "DISCUSSION";
     room.phase = "VOTING";
     room.round?.votes.clear();
     this.setDeadline(room, room.settings.votingSeconds, () => this.finishVoting(room));
     this.broadcast(room);
+    if (chatWasOpen) this.postSystem(room, "Voting has started. Chat is now closed.");
   }
 
   private finishVoting(room: Room): void {
@@ -446,6 +499,7 @@ export class RoomManager {
     room.phase = "GAME_END";
     this.clearTimer(room);
     this.broadcast(room);
+    this.postSystem(room, "The game has ended. Chat is closed.");
     void this.persistence.saveCompletedGame(this.publicState(room));
   }
 
@@ -454,6 +508,7 @@ export class RoomManager {
     room.cancelledReason = reason;
     this.clearTimer(room);
     this.broadcast(room);
+    this.postSystem(room, `The game was cancelled: ${reason}`);
   }
 
   private setDeadline(room: Room, seconds: number, callback: () => void): void {
@@ -533,7 +588,14 @@ export class RoomManager {
     this.io.to(room.code).emit("room:state", this.publicState(room));
   }
 
+  private postSystem(room: Room, text: string): void {
+    this.io.to(room.code).emit("chat:message", room.chat.postSystem(text));
+  }
+
   private attachSocket(socket: GameSocket, room: Room, player: Player): void {
+    // A socket belongs to at most one room channel, so it can never receive another room's chat.
+    const previousRoom = socket.data.roomCode as string | undefined;
+    if (previousRoom && previousRoom !== room.code) socket.leave(previousRoom);
     socket.data.roomCode = room.code;
     socket.data.playerId = player.id;
     socket.join(room.code);
@@ -582,6 +644,7 @@ export class RoomManager {
       room.players.delete(playerId);
       this.transferHostIfNeeded(room);
       this.broadcast(room);
+      this.postSystem(room, `${player.name} left the room.`);
       if (room.players.size === 0) this.destroyRoom(room);
     }, RECONNECT_GRACE_MS);
   }
