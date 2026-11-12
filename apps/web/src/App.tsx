@@ -288,17 +288,34 @@ function SettingsForm({ settings, send }: { settings: GameSettings; send: <T>(ev
         </select>
       </label>
       <label className="toggle"><input type="checkbox" checked={settings.discussionEnabled} onChange={(event) => update({ discussionEnabled: event.target.checked })} /> Discussion enabled</label>
-      <div className="chips">
-        {categories.map((category) => {
-          const active = settings.categories.includes(category);
-          return (
-            <button className={active ? "chip active" : "chip"} key={category} onClick={() => {
-              const next = active ? settings.categories.filter((item) => item !== category) : [...settings.categories, category];
-              if (next.length > 0) update({ categories: next });
-            }}>{category}</button>
-          );
-        })}
-      </div>
+      <div className="chips" aria-label="Word category">
+  <button
+    type="button"
+    className={settings.categories.length === categories.length ? "chip active" : "chip"}
+    aria-pressed={settings.categories.length === categories.length}
+    onClick={() => update({ categories })}
+  >
+    All categories
+  </button>
+
+  {categories.map((category) => {
+    const active =
+      settings.categories.length === 1 &&
+      settings.categories[0] === category;
+
+    return (
+      <button
+        type="button"
+        className={active ? "chip active" : "chip"}
+        aria-pressed={active}
+        key={category}
+        onClick={() => update({ categories: [category] })}
+      >
+        {category}
+      </button>
+    );
+  })}
+</div>
     </div>
   );
 }
