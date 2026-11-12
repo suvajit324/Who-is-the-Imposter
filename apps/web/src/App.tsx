@@ -340,7 +340,7 @@ function CluePhase({ state, me, secret, send }: { state: PublicRoomState; me: Pu
       <h2>Submit one clue</h2>
       <p className="muted">Your word is <strong>{secret?.word ?? "hidden"}</strong>. Use one word, and do not type the secret word itself.</p>
       <div className="clue-form">
-        <Input label="Clue" value={clue} disabled={submitted} maxLength={24} onChange={(event) => setClue(event.target.value)} placeholder="Crunchy" />
+        <Input label="Clue" value={clue} disabled={submitted} maxLength={24} onChange={(event) => setClue(event.target.value)} placeholder="Type a one-word clue" />
         <Button disabled={submitted || !clue.trim()} onClick={() => send("clue:submit", { clue }, () => setClue(""))}><Send size={18} />Submit</Button>
       </div>
       <ClueList clues={state.clues} players={state.players} />
