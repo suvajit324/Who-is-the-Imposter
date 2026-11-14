@@ -5,6 +5,8 @@ import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   type BasicAck,
+  type ChatHistoryAck,
+  type ChatSendAck,
   type CreateRoomAck,
   type GamePhase,
   type GameSettings,
@@ -18,11 +20,13 @@ import {
   type VoteOutcome
 } from "@imposter/shared";
 import { fallbackWordBank, type WordPair } from "../data/wordBank.js";
+import { ChatModerationGate, createModerationEngine, defaultModerationPolicy, type ModerationEngine, type ModerationPolicy } from "../moderation/index.js";
+import { RoomChat } from "./chat.js";
 import { validateClue } from "./clues.js";
 import { selectImposter } from "./imposter.js";
 import { calculateScores } from "./scoring.js";
 import { resolveVotes, validateVote } from "./voting.js";
-import { selectWordPair } from "./words.js";
+import { matchingWordPairs, selectWordPair } from "./words.js";
 
 type GameSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
 type GameServer = Server<ClientToServerEvents, ServerToClientEvents>;
@@ -51,6 +55,7 @@ type RoundState = {
   runoffVotes: Map<string, string>;
   runoffCandidateIds: string[];
   result: RoundResult | null;
+  rejectedClueAttempts: Map<string, number>;
 };
 
 type Room = {
@@ -69,6 +74,8 @@ type Room = {
   cancelledReason: string | null;
   createdAt: number;
   lastEntryAtByIp: Map<string, number>;
+  chat: RoomChat;
+  moderation: ChatModerationGate;
 };
 
 type Persistence = {
@@ -79,15 +86,26 @@ type Persistence = {
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROLE_REVEAL_SECONDS = 12;
 const RECONNECT_GRACE_MS = 60_000;
+/** Rejected clue submissions allowed per player per round (limits probing via validation errors). */
+export const MAX_REJECTED_CLUE_ATTEMPTS = 8;
+/** Phases in which submitted clue text must stay hidden from other players. */
+const CLUE_TEXT_HIDDEN_PHASES: GamePhase[] = ["ROLE_ASSIGNMENT", "CLUE_PHASE"];
 
 export class RoomManager {
   private rooms = new Map<string, Room>();
 
+  private readonly moderationEngine: ModerationEngine;
+  private readonly moderationPolicy: ModerationPolicy;
+
   constructor(
     private readonly io: GameServer,
     private readonly persistence: Persistence,
-    private readonly wordBank = fallbackWordBank
-  ) {}
+    private readonly wordBank = fallbackWordBank,
+    options: { moderationPolicy?: ModerationPolicy } = {}
+  ) {
+    this.moderationEngine = createModerationEngine({ bankWords: wordBank.flatMap((pair) => [pair.wordA, pair.wordB]) });
+    this.moderationPolicy = options.moderationPolicy ?? defaultModerationPolicy;
+  }
 
   createRoom(socket: GameSocket, playerName: string, ip = "unknown"): CreateRoomAck {
     if (this.tooSoon(ip)) return { ok: false, message: "Please wait a moment before creating another room." };
@@ -108,10 +126,13 @@ export class RoomManager {
       phaseNonce: 0,
       cancelledReason: null,
       createdAt: Date.now(),
-      lastEntryAtByIp: new Map([[ip, Date.now()]])
+      lastEntryAtByIp: new Map([[ip, Date.now()]]),
+      chat: new RoomChat(code),
+      moderation: new ChatModerationGate(this.moderationEngine, this.moderationPolicy)
     };
     this.rooms.set(code, room);
     this.attachSocket(socket, room, player);
+    this.postSystem(room, `${player.name} created the room.`);
     return { ok: true, roomCode: code, playerId: player.id, reconnectToken: player.reconnectToken, state: this.publicState(room) };
   }
 
@@ -128,6 +149,7 @@ export class RoomManager {
     room.lastEntryAtByIp.set(ip, Date.now());
     this.attachSocket(socket, room, player);
     this.broadcast(room);
+    this.postSystem(room, `${player.name} joined the room.`);
     return { ok: true, roomCode: room.code, playerId: player.id, reconnectToken: player.reconnectToken, state: this.publicState(room) };
   }
 
@@ -137,12 +159,14 @@ export class RoomManager {
     if (!room || !player || !this.tokenMatches(player.reconnectToken, token)) {
       return { ok: false, message: "Reconnect failed. Please rejoin from the lobby if the game has not started." };
     }
+    const wasDisconnected = !player.connected;
     player.socketId = socket.id;
     player.connected = true;
     player.disconnectedAt = null;
     this.attachSocket(socket, room, player);
     this.broadcast(room);
     this.sendSecretIfActive(room, player);
+    if (wasDisconnected) this.postSystem(room, `${player.name} reconnected.`);
     return { ok: true, roomCode: room.code, playerId: player.id, reconnectToken: player.reconnectToken, state: this.publicState(room) };
   }
 
@@ -178,8 +202,13 @@ export class RoomManager {
     const target = context.room.players.get(targetPlayerId);
     if (!target) return { ok: false, message: "Player not found." };
     context.room.players.delete(target.id);
-    if (target.socketId) this.io.to(target.socketId).emit("room:error", "You were removed from the room.");
+    if (target.socketId) {
+      this.io.to(target.socketId).emit("room:error", "You were removed from the room.");
+      // Stop the removed player's socket from receiving this room's broadcasts (state and chat).
+      this.io.in(target.socketId).socketsLeave(context.room.code);
+    }
     this.broadcast(context.room);
+    this.postSystem(context.room, `${target.name} was removed by the host.`);
     return { ok: true };
   }
 
@@ -192,6 +221,9 @@ export class RoomManager {
     const connected = this.connectedPlayers(room);
     if (connected.length < MIN_PLAYERS) return { ok: false, message: "At least three players are required." };
     if (!connected.every((candidate) => candidate.host || candidate.ready)) return { ok: false, message: "All connected players must be ready." };
+    if (matchingWordPairs(this.wordBank, room.settings).length === 0) {
+      return { ok: false, message: "No word pairs match this category and difficulty. Choose a different combination." };
+    }
     this.beginRound(room);
     return { ok: true };
   }
@@ -214,8 +246,16 @@ export class RoomManager {
     if (room.phase !== "CLUE_PHASE" || !room.round) return { ok: false, message: "Clues are not open right now." };
     if (Date.now() > (room.deadline ?? 0)) return { ok: false, message: "The clue deadline has passed." };
     if (room.round.clues.has(player.id)) return { ok: false, message: "You already submitted a clue." };
-    const error = validateClue(clue, [...room.round.clues.values()], [room.round.normalWord, room.round.imposterWord]);
-    if (error) return { ok: false, message: error };
+    const rejected = room.round.rejectedClueAttempts.get(player.id) ?? 0;
+    if (rejected >= MAX_REJECTED_CLUE_ATTEMPTS) return { ok: false, message: "Too many invalid clue attempts this round." };
+    // Only the player's own word is forbidden. Checking the *other* word would let players
+    // probe it: a rejection would confirm a guess (e.g. the Imposter discovering the main word).
+    const ownWord = player.id === room.round.imposterId ? room.round.imposterWord : room.round.normalWord;
+    const error = validateClue(clue, [...room.round.clues.values()], [ownWord]);
+    if (error) {
+      room.round.rejectedClueAttempts.set(player.id, rejected + 1);
+      return { ok: false, message: error };
+    }
     room.round.clues.set(player.id, clue.trim());
     if (this.connectedPlayers(room).every((candidate) => room.round?.clues.has(candidate.id))) {
       this.advanceAfterClues(room);
@@ -264,7 +304,7 @@ export class RoomManager {
       player.score += 2;
     }
     this.broadcast(room);
-    this.io.to(room.code).emit("round:result", result);
+    this.io.to(room.code).emit("round:result", this.publicResult(room, result));
     return { ok: true };
   }
 
@@ -282,6 +322,7 @@ export class RoomManager {
     const context = this.context(socket);
     if (!context) return { ok: false, message: "Join a room first." };
     if (!context.player.host) return { ok: false, message: "Only the host can start a rematch." };
+    if (!["GAME_END", "CANCELLED"].includes(context.room.phase)) return { ok: false, message: "A rematch can only start after the game ends." };
     const room = context.room;
     this.clearTimer(room);
     room.phase = "LOBBY";
@@ -297,8 +338,44 @@ export class RoomManager {
       player.ready = player.host;
       player.roleAcked = false;
     }
+    // A rematch is a genuinely new game: start a fresh chat log.
+    room.chat.reset();
+    room.moderation.reset();
+    this.io.to(room.code).emit("chat:history", room.chat.history());
     this.broadcast(room);
+    this.postSystem(room, "A new game has been set up. Get ready!");
     return { ok: true };
+  }
+
+  sendChat(socket: GameSocket, text: string, clientMessageId: string): ChatSendAck {
+    const context = this.context(socket);
+    if (!context) return { ok: false, message: "Join a room first." };
+    const { room, player } = context;
+    // Authoritative phase check: chat is only writable during discussion.
+    if (room.phase !== "DISCUSSION") {
+      return {
+        ok: false,
+        message: ["VOTING", "RUNOFF_VOTING"].includes(room.phase)
+          ? "Voting has started. Chat is now closed."
+          : "Chat is only open during the discussion phase."
+      };
+    }
+    // Sender identity always comes from the verified socket session, never from the payload.
+    // Moderation runs before anything is stored or broadcast, and only against the words this
+    // sender already knows (taken from trusted server state), so its verdict cannot leak the other word.
+    const knownWords = this.knownSecretWords(room, player);
+    const result = room.chat.postPlayer({ id: player.id, name: player.name }, text, clientMessageId, (screenedText) =>
+      room.moderation.screen({ playerId: player.id, roundNumber: room.roundNumber, knownWords, text: screenedText, now: Date.now() })
+    );
+    if (!result.ok) return result;
+    if (!result.duplicate) this.io.to(room.code).emit("chat:message", result.message);
+    return { ok: true, chatMessage: result.message };
+  }
+
+  chatHistory(socket: GameSocket): ChatHistoryAck {
+    const context = this.context(socket);
+    if (!context) return { ok: false, message: "Join a room first." };
+    return { ok: true, ...context.room.chat.history() };
   }
 
   disconnect(socket: GameSocket): void {
@@ -309,6 +386,7 @@ export class RoomManager {
     player.socketId = null;
     player.disconnectedAt = Date.now();
     socket.leave(room.code);
+    this.postSystem(room, `${player.name} disconnected.`);
     if (room.phase === "LOBBY") {
       this.scheduleLobbyRemoval(room, player.id);
     } else {
@@ -328,10 +406,10 @@ export class RoomManager {
       this.cancelRoom(room, "At least three connected players are required.");
       return;
     }
+    const pair = selectWordPair(this.wordBank, room.settings, room.usedWordPairIds);
     room.roundNumber += 1;
     const imposterId = selectImposter(players.map((player) => player.id), room.imposterCounts);
     room.imposterCounts[imposterId] = (room.imposterCounts[imposterId] ?? 0) + 1;
-    const pair = selectWordPair(this.wordBank, room.settings, room.usedWordPairIds);
     room.usedWordPairIds.add(pair.id);
     const flip = Math.random() >= 0.5;
     room.round = {
@@ -344,7 +422,8 @@ export class RoomManager {
       votes: new Map(),
       runoffVotes: new Map(),
       runoffCandidateIds: [],
-      result: null
+      result: null,
+      rejectedClueAttempts: new Map()
     };
     for (const player of room.players.values()) player.roleAcked = false;
     room.phase = "ROLE_ASSIGNMENT";
@@ -365,18 +444,26 @@ export class RoomManager {
     if (room.settings.discussionEnabled && room.settings.discussionSeconds > 0) {
       room.phase = "DISCUSSION";
       this.setDeadline(room, room.settings.discussionSeconds, () => this.startVoting(room));
-    } else {
-      this.startVoting(room);
+      this.broadcast(room);
+      this.postSystem(
+        room,
+        room.roundNumber <= 1
+          ? "Discussion has started. Chat is open."
+          : `Round ${room.roundNumber} discussion has started. Chat is open.`
+      );
+      return;
     }
-    this.broadcast(room);
+    this.startVoting(room);
   }
 
   private startVoting(room: Room): void {
     if (!["CLUE_PHASE", "DISCUSSION"].includes(room.phase)) return;
+    const chatWasOpen = room.phase === "DISCUSSION";
     room.phase = "VOTING";
     room.round?.votes.clear();
     this.setDeadline(room, room.settings.votingSeconds, () => this.finishVoting(room));
     this.broadcast(room);
+    if (chatWasOpen) this.postSystem(room, "Voting has started. Chat is now closed.");
   }
 
   private finishVoting(room: Room): void {
@@ -439,13 +526,14 @@ export class RoomManager {
     room.round.result = result;
     room.roundHistory.push(result);
     this.broadcast(room);
-    this.io.to(room.code).emit("round:result", result);
+    this.io.to(room.code).emit("round:result", this.publicResult(room, result));
   }
 
   private endGame(room: Room): void {
     room.phase = "GAME_END";
     this.clearTimer(room);
     this.broadcast(room);
+    this.postSystem(room, "The game has ended. Chat is closed.");
     void this.persistence.saveCompletedGame(this.publicState(room));
   }
 
@@ -454,6 +542,7 @@ export class RoomManager {
     room.cancelledReason = reason;
     this.clearTimer(room);
     this.broadcast(room);
+    this.postSystem(room, `The game was cancelled: ${reason}`);
   }
 
   private setDeadline(room: Room, seconds: number, callback: () => void): void {
@@ -495,20 +584,31 @@ export class RoomManager {
       voteSubmittedCount: this.currentVoteMap(room).size,
       voteEligibleCount: this.eligiblePlayerIds(room).length,
       runoffCandidateIds: room.round?.runoffCandidateIds ?? [],
-      latestResult: room.round?.result ?? null,
-      roundHistory: room.roundHistory,
+      latestResult: room.round?.result ? this.publicResult(room, room.round.result) : null,
+      roundHistory: room.roundHistory.map((result) => this.publicResult(room, result)),
       cancelledReason: room.cancelledReason,
       persistenceEnabled: this.persistence.enabled
     };
   }
 
+  /**
+   * Public view of a round result. While a caught Imposter may still guess the main word,
+   * the main word is withheld, otherwise the Imposter could read the answer off the result.
+   */
+  private publicResult(room: Room, result: RoundResult): RoundResult {
+    const guessPending = room.phase === "VOTE_RESULT" && room.round?.result === result && result.correct && result.imposterGuess === null;
+    return guessPending ? { ...result, mainWord: null } : result;
+  }
+
   private publicClues(room: Room): PublicClue[] {
     const round = room.round;
     if (!round) return [];
+    // Clue text is secret until everyone has submitted; only submission status is public before that.
+    const hideText = CLUE_TEXT_HIDDEN_PHASES.includes(room.phase);
     return [...room.players.values()].map((player) => ({
       playerId: player.id,
       playerName: player.name,
-      clue: round.clues.get(player.id) ?? null,
+      clue: hideText ? null : round.clues.get(player.id) ?? null,
       missed: ["DISCUSSION", "VOTING", "RUNOFF_VOTING", "VOTE_RESULT", "GAME_END"].includes(room.phase) && !round.clues.has(player.id)
     }));
   }
@@ -533,7 +633,23 @@ export class RoomManager {
     this.io.to(room.code).emit("room:state", this.publicState(room));
   }
 
+  /**
+   * The secret words a player legitimately knows this round: their own word only.
+   * (Written as a list so a future multi-Imposter mode can return several.)
+   */
+  private knownSecretWords(room: Room, player: Player): string[] {
+    if (!room.round) return [];
+    return [player.id === room.round.imposterId ? room.round.imposterWord : room.round.normalWord];
+  }
+
+  private postSystem(room: Room, text: string): void {
+    this.io.to(room.code).emit("chat:message", room.chat.postSystem(text));
+  }
+
   private attachSocket(socket: GameSocket, room: Room, player: Player): void {
+    // A socket belongs to at most one room channel, so it can never receive another room's chat.
+    const previousRoom = socket.data.roomCode as string | undefined;
+    if (previousRoom && previousRoom !== room.code) socket.leave(previousRoom);
     socket.data.roomCode = room.code;
     socket.data.playerId = player.id;
     socket.join(room.code);
@@ -582,6 +698,7 @@ export class RoomManager {
       room.players.delete(playerId);
       this.transferHostIfNeeded(room);
       this.broadcast(room);
+      this.postSystem(room, `${player.name} left the room.`);
       if (room.players.size === 0) this.destroyRoom(room);
     }, RECONNECT_GRACE_MS);
   }

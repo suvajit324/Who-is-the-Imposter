@@ -25,6 +25,7 @@ import {
 } from "@imposter/shared";
 import { socket } from "./state/socket.js";
 import { Badge, Button, IconButton, Input, Panel } from "./components/ui.js";
+import { ChatBox } from "./components/chat/ChatBox.js";
 
 type Credentials = { roomCode: string; playerId: string; reconnectToken: string };
 type EnterRoomResponse = { ok: true; roomCode: string; playerId: string; reconnectToken: string; state: PublicRoomState };
@@ -38,6 +39,8 @@ export function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(() => readCredentials());
   const [connected, setConnected] = useState(socket.connected);
   const [error, setError] = useState("");
+  // Bumped whenever the server (re)binds this socket to a player, so the chat re-syncs its history.
+  const [session, setSession] = useState(0);
   const me = state?.players.find((player) => player.id === credentials?.playerId) ?? null;
   const host = Boolean(me?.host);
 
@@ -52,6 +55,7 @@ export function App() {
             setCredentials({ roomCode: response.roomCode, playerId: response.playerId, reconnectToken: response.reconnectToken });
             saveCredentials(response);
             setState(response.state);
+            setSession((value) => value + 1);
           }
         });
       }
@@ -91,6 +95,7 @@ export function App() {
     localStorage.setItem(credentialKey, JSON.stringify(next));
     setState(response.state);
     setSecret(null);
+    setSession((value) => value + 1);
   };
 
   return (
@@ -115,6 +120,7 @@ export function App() {
           secret={secret}
           setSecret={setSecret}
           send={send}
+          session={session}
           leave={() => {
             localStorage.removeItem(credentialKey);
             setCredentials(null);
@@ -185,9 +191,10 @@ function GameRoom(props: {
   secret: PrivateRole | null;
   setSecret: (secret: PrivateRole | null) => void;
   send: <T>(event: string, payload: T, onOk?: () => void) => void;
+  session: number;
   leave: () => void;
 }) {
-  const { state, me, host, secret, setSecret, send, leave } = props;
+  const { state, me, host, secret, setSecret, send, session, leave } = props;
   const timeLeft = useCountdown(state.deadline);
   const inviteLink = `${window.location.origin}?room=${state.roomCode}`;
 
@@ -216,6 +223,7 @@ function GameRoom(props: {
           {state.phase === "VOTE_RESULT" && <RoundResultView state={state} secret={secret} host={host} send={send} />}
           {state.phase === "GAME_END" && <GameEnd state={state} host={host} send={send} />}
           {state.phase === "CANCELLED" && <Panel><h2>Game cancelled</h2><p>{state.cancelledReason}</p></Panel>}
+          <ChatBox state={state} meId={me?.id ?? null} sessionKey={session} />
         </div>
       </section>
     </>
@@ -343,7 +351,7 @@ function CluePhase({ state, me, secret, send }: { state: PublicRoomState; me: Pu
         <Input label="Clue" value={clue} disabled={submitted} maxLength={24} onChange={(event) => setClue(event.target.value)} placeholder="Type a one-word clue" />
         <Button disabled={submitted || !clue.trim()} onClick={() => send("clue:submit", { clue }, () => setClue(""))}><Send size={18} />Submit</Button>
       </div>
-      <ClueList clues={state.clues} players={state.players} />
+      <ClueList players={state.players} />
     </Panel>
   );
 }
@@ -352,7 +360,7 @@ function Discussion({ state }: { state: PublicRoomState }) {
   return (
     <Panel>
       <h2>Discuss the clues</h2>
-      <p className="muted">Talk it out in your call. Watch for clues that fit the category but miss the exact target.</p>
+      <p className="muted">Talk it out in the room chat below or on your call. Watch for clues that fit the category but miss the exact target.</p>
       <ClueCards clues={state.clues} />
     </Panel>
   );
@@ -392,7 +400,7 @@ function RoundResultView({ state, secret, host, send }: { state: PublicRoomState
       <h2>{result.correct ? "The group caught the Imposter" : "The Imposter escaped"}</h2>
       <div className="result-grid">
         <Stat label="Imposter" value={result.imposterName} />
-        <Stat label="Main word" value={result.mainWord} />
+        <Stat label="Main word" value={result.mainWord ?? "Hidden until the Imposter guesses"} />
         <Stat label="Imposter word" value={result.imposterWord} />
         <Stat label="Accused" value={result.selectedPlayerName ?? "No one"} />
       </div>
@@ -418,17 +426,18 @@ function GameEnd({ state, host, send }: { state: PublicRoomState; host: boolean;
       <p className="winner">{winners} {winners.includes(",") ? "share" : "wins"} rank 1.</p>
       <Leaderboard players={state.players} />
       <div className="history">
-        {state.roundHistory.map((round) => <p key={round.roundNumber}>Round {round.roundNumber}: {round.imposterName} was the Imposter, word pair {round.mainWord}/{round.imposterWord}.</p>)}
+        {state.roundHistory.map((round) => <p key={round.roundNumber}>Round {round.roundNumber}: {round.imposterName} was the Imposter, word pair {round.mainWord ?? "?"}/{round.imposterWord}.</p>)}
       </div>
       {host && <Button onClick={() => send("game:rematch", {})}><RefreshCw size={18} />Rematch</Button>}
     </Panel>
   );
 }
 
-function ClueList({ clues, players }: { clues: PublicRoomState["clues"]; players: PublicPlayer[] }) {
+function ClueList({ players }: { players: PublicPlayer[] }) {
+  // Clue text stays hidden on the server until the clue phase ends, so only show who has submitted.
   return (
     <div className="status-list">
-      {players.map((player) => <Badge key={player.id} tone={clues.find((clue) => clue.playerId === player.id)?.clue ? "green" : "muted"}>{player.name}</Badge>)}
+      {players.map((player) => <Badge key={player.id} tone={player.submittedClue ? "green" : "muted"}>{player.name}</Badge>)}
     </div>
   );
 }

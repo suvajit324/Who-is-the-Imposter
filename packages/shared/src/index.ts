@@ -97,7 +97,8 @@ export type RoundResult = {
   roundNumber: number;
   imposterId: string;
   imposterName: string;
-  mainWord: string;
+  /** Null while a caught Imposter can still guess it; revealed after the guess or when the round advances. */
+  mainWord: string | null;
   imposterWord: string;
   selectedPlayerId: string | null;
   selectedPlayerName: string | null;
@@ -150,11 +151,85 @@ export type JoinRoomAck = CreateRoomAck;
 
 export type BasicAck = { ok: true } | { ok: false; message: string };
 
+// ---------------------------------------------------------------------------
+// Room discussion chat
+// ---------------------------------------------------------------------------
+
+export const CHAT_MAX_LENGTH = 300;
+export const CHAT_HISTORY_LIMIT = 200;
+
+export type ChatMessageKind = "player" | "system";
+
+export type ChatMessage = {
+  /** Server-generated unique id; used by clients to de-duplicate. */
+  id: string;
+  /** Identifies one game's chat log. Changes when a brand-new game (rematch) starts. */
+  epoch: string;
+  /** Monotonic per-room sequence number; defines display order. */
+  seq: number;
+  kind: ChatMessageKind;
+  /** Null for system messages. Always taken from the server-side session, never the payload. */
+  playerId: string | null;
+  playerName: string | null;
+  text: string;
+  /** Server timestamp in epoch milliseconds. */
+  sentAt: number;
+};
+
+export type ChatHistory = {
+  roomCode: string;
+  epoch: string;
+  messages: ChatMessage[];
+};
+
+export type ChatSendAck = { ok: true; chatMessage: ChatMessage } | { ok: false; message: string };
+export type ChatHistoryAck = ({ ok: true } & ChatHistory) | { ok: false; message: string };
+
+export type ChatTextValidation = { ok: true; text: string } | { ok: false; message: string };
+
+/** Control characters, zero-width characters and bidi overrides (used to spoof or hide text). */
+function isInvisibleOrControl(code: number): boolean {
+  return (
+    code <= 0x1f ||
+    (code >= 0x7f && code <= 0x9f) ||
+    (code >= 0x200b && code <= 0x200f) ||
+    (code >= 0x2028 && code <= 0x202e) ||
+    (code >= 0x2060 && code <= 0x2064) ||
+    code === 0xfeff
+  );
+}
+
+/**
+ * MessageValidator shared by client (instant feedback) and server (authoritative).
+ * Normalises whitespace and strips control characters before length checks.
+ */
+export function validateChatText(raw: unknown): ChatTextValidation {
+  if (typeof raw !== "string") return { ok: false, message: "Type a message before sending." };
+  const text = raw
+    .replace(/./gsu, (char) => (isInvisibleOrControl(char.codePointAt(0) ?? 0) ? " " : char))
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!text) return { ok: false, message: "Type a message before sending." };
+  if (text.length > CHAT_MAX_LENGTH) {
+    return { ok: false, message: `Messages can be at most ${CHAT_MAX_LENGTH} characters.` };
+  }
+  return { ok: true, text };
+}
+
+export const chatSendSchema = z.object({
+  // Generous raw cap so whitespace-heavy input reaches the validator, but huge payloads are dropped early.
+  text: z.string().max(CHAT_MAX_LENGTH * 4),
+  clientMessageId: z.string().trim().min(8).max(64).regex(/^[A-Za-z0-9_-]+$/)
+});
+
 export type ServerToClientEvents = {
   "room:state": (state: PublicRoomState) => void;
   "room:error": (message: string) => void;
   "player:secret": (secret: PrivateRole) => void;
   "round:result": (result: RoundResult) => void;
+  "chat:message": (message: ChatMessage) => void;
+  /** Full chat log replacement (e.g. when a new game resets the chat). */
+  "chat:history": (history: ChatHistory) => void;
 };
 
 export type ClientToServerEvents = {
@@ -177,6 +252,8 @@ export type ClientToServerEvents = {
   "imposter:guess": (payload: { guess: string }, ack: (response: BasicAck) => void) => void;
   "game:next-round": (_payload: Record<string, never>, ack: (response: BasicAck) => void) => void;
   "game:rematch": (_payload: Record<string, never>, ack: (response: BasicAck) => void) => void;
+  "chat:send": (payload: { text: string; clientMessageId: string }, ack: (response: ChatSendAck) => void) => void;
+  "chat:history": (_payload: Record<string, never>, ack: (response: ChatHistoryAck) => void) => void;
 };
 
 export const createRoomSchema = z.object({

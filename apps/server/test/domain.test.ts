@@ -8,9 +8,16 @@ import { resolveVotes, validateVote } from "../src/domain/voting.js";
 import { selectWordPair } from "../src/domain/words.js";
 
 describe("imposter selection", () => {
-  it("selects the player with the lowest imposter count deterministically", () => {
-    expect(selectImposter(["b", "a", "c"], { a: 1, b: 0, c: 0 })).toBe("b");
-    expect(selectImposter(["b", "a", "c"], { a: 0, b: 0, c: 0 })).toBe("a");
+  it("only picks among players with the lowest imposter count", () => {
+    expect(selectImposter(["b", "a", "c"], { a: 1, b: 0, c: 1 })).toBe("b");
+    for (let index = 0; index < 50; index += 1) {
+      expect(["b", "c"]).toContain(selectImposter(["b", "a", "c"], { a: 1, b: 0, c: 0 }));
+    }
+  });
+
+  it("breaks ties with the injected random source, not by player id order", () => {
+    expect(selectImposter(["b", "a", "c"], {}, () => 0)).toBe("b");
+    expect(selectImposter(["b", "a", "c"], {}, () => 2)).toBe("c");
   });
 });
 
