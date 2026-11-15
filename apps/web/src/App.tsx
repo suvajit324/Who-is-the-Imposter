@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
   Check,
@@ -57,6 +57,19 @@ export function App() {
   const [session, setSession] = useState(0);
   const me = state?.players.find((player) => player.id === credentials?.playerId) ?? null;
   const host = Boolean(me?.host);
+  // Read by the socket listeners below, which are registered once.
+  const inRoom = useRef(false);
+  inRoom.current = state !== null;
+
+  /** Leaves the room view and forgets the seat, e.g. after the seat was released by the server. */
+  const exitRoom = (message?: string) => {
+    localStorage.removeItem(credentialKey);
+    setCredentials(null);
+    setState(null);
+    setSecret(null);
+    // Keep an earlier explanation (e.g. an expired sign-in) next to this one.
+    if (message) setNotice((current) => (current && current !== message ? `${current} ${message}` : message));
+  };
 
   useEffect(() => {
     socket.connect();
@@ -70,7 +83,11 @@ export function App() {
             saveCredentials(response);
             setState(response.state);
             setSession((value) => value + 1);
+            return;
           }
+          // The seat no longer exists (the room ended or was emptied, the server restarted, or a
+          // signed-in seat was resumed without that account). Don't leave a frozen room on screen.
+          exitRoom(inRoom.current ? `You are no longer in room ${stored.roomCode}. The game may have ended or the server restarted.` : undefined);
         });
       }
     };
@@ -93,14 +110,15 @@ export function App() {
     const onState = (next: PublicRoomState) => setState(next);
     const onSecret = (next: PrivateRole) => setSecret(next);
     const onResult = (result: RoundResult) => setState((current) => (current ? { ...current, latestResult: result } : current));
-    const onError = (message: string) => setError(message);
+    // The server sends room:error only when this player has been removed from the room.
+    const onRemoved = (message: string) => exitRoom(message);
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
     socket.on("connect_error", onConnectError);
     socket.on("room:state", onState);
     socket.on("player:secret", onSecret);
     socket.on("round:result", onResult);
-    socket.on("room:error", onError);
+    socket.on("room:error", onRemoved);
     return () => {
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
@@ -108,7 +126,7 @@ export function App() {
       socket.off("room:state", onState);
       socket.off("player:secret", onSecret);
       socket.off("round:result", onResult);
-      socket.off("room:error", onError);
+      socket.off("room:error", onRemoved);
     };
   }, []);
 
@@ -203,10 +221,7 @@ export function App() {
           send={send}
           session={session}
           leave={() => {
-            localStorage.removeItem(credentialKey);
-            setCredentials(null);
-            setState(null);
-            setSecret(null);
+            exitRoom();
             socket.disconnect();
             socket.connect();
           }}
@@ -323,17 +338,20 @@ function PhaseBanner({ state, timeLeft }: { state: PublicRoomState; timeLeft: nu
 }
 
 function Lobby({ state, me, host, send }: { state: PublicRoomState; me: PublicPlayer | null; host: boolean; send: <T>(event: string, payload: T) => void }) {
-  const readyCount = state.players.filter((player) => player.host || player.ready).length;
+  // Same rule as the server: only connected players count (someone who left keeps their seat for a short while).
+  const connectedPlayers = state.players.filter((player) => player.connected);
+  const readyCount = connectedPlayers.filter((player) => player.host || player.ready).length;
+  const canStart = connectedPlayers.length >= 3 && readyCount === connectedPlayers.length;
   return (
     <Panel>
       <div className="section-title">
         <h2>Lobby</h2>
-        <Badge tone={state.players.length >= 3 && readyCount === state.players.length ? "green" : "amber"}>{readyCount}/{state.players.length} ready</Badge>
+        <Badge tone={canStart ? "green" : "amber"}>{readyCount}/{connectedPlayers.length} ready</Badge>
       </div>
       <p className="muted">The host can start when at least three players are connected and everyone is ready.</p>
       <div className="button-row">
         {!me?.host && <Button onClick={() => send("player:ready", { ready: !me?.ready })}>{me?.ready ? "Not Ready" : "Ready"}</Button>}
-        {host && <Button onClick={() => send("game:start", {})} disabled={state.players.length < 3 || readyCount !== state.players.length}><Play size={18} />Start Game</Button>}
+        {host && <Button onClick={() => send("game:start", {})} disabled={!canStart}><Play size={18} />Start Game</Button>}
       </div>
       {host && <SettingsForm settings={state.settings} send={send} />}
       {!state.persistenceEnabled && <p className="muted">Local mode: MongoDB is not configured, so completed games are not persisted.</p>}

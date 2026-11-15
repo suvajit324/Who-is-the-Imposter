@@ -23,10 +23,10 @@ const INCORRECT_LOGIN = "Incorrect username or password.";
 
 export type AccountServiceOptions = {
   now?: () => number;
-  /** Failed logins allowed per username per window before further attempts are refused. */
+  /** Sign-in attempts allowed per username per window before further attempts are refused (a successful sign-in resets the count). */
   loginFailureLimit?: number;
   loginFailureWindowMs?: number;
-  /** New accounts allowed across the whole server per window. */
+  /** Registration attempts (that pass validation) allowed across the whole server per window. */
   registrationLimit?: number;
   registrationWindowMs?: number;
 };
@@ -55,7 +55,8 @@ export class AccountService {
     if (input.password.trim().toLowerCase() === usernameKey(input.username)) {
       return { ok: false, status: 400, error: "Your password must be different from your username." };
     }
-    if (this.registrations.isLimited("global")) {
+    // Counted before any await, so a burst of parallel requests cannot all slip under the limit.
+    if (!this.registrations.consume("global")) {
       return { ok: false, status: 429, error: "Too many new accounts right now. Please try again in a few minutes." };
     }
     const key = usernameKey(input.username);
@@ -70,22 +71,21 @@ export class AccountService {
       createdAt: new Date(this.now())
     };
     if ((await this.store.createUser(user)) === "username-taken") return { ok: false, status: 409, error: "That username is taken." };
-    this.registrations.record("global");
     return { ok: true, value: await this.startSession(user) };
   }
 
   async login(input: LoginRequest): Promise<ServiceResult<AuthResponse>> {
     const key = usernameKey(input.username);
-    if (this.loginFailures.isLimited(key)) {
+    // Every attempt is counted before the password check starts, and a successful sign-in
+    // clears the count. Recording only after the (slow) check would let many parallel
+    // guesses all pass the limit check before the first failure was counted.
+    if (!this.loginFailures.consume(key)) {
       return { ok: false, status: 429, error: "Too many failed sign-in attempts for this username. Please wait 15 minutes and try again." };
     }
     const user = await this.store.findUserByUsernameKey(key);
     // Unknown usernames are checked against a dummy hash so both cases take the same time.
     const valid = await verifyPassword(input.password, user?.passwordHash ?? (await dummyPasswordHash()));
-    if (!user || !valid) {
-      this.loginFailures.record(key);
-      return { ok: false, status: 401, error: INCORRECT_LOGIN };
-    }
+    if (!user || !valid) return { ok: false, status: 401, error: INCORRECT_LOGIN };
     this.loginFailures.reset(key);
     return { ok: true, value: await this.startSession(user) };
   }

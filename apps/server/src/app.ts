@@ -23,6 +23,8 @@ export type GameServerOptions = {
   moderationPolicy?: ModerationPolicy;
   accountOptions?: AccountServiceOptions;
   matchRecorderOptions?: MatchRecorderOptions;
+  /** Room timing overrides; tests shorten the reconnect grace period. */
+  roomOptions?: { reconnectGraceMs?: number };
 };
 
 /**
@@ -32,6 +34,11 @@ export type GameServerOptions = {
 export function createGameServer(options: GameServerOptions) {
   const app = express();
   app.disable("x-powered-by");
+  app.use((_req, res, next) => {
+    // Every response is JSON (or empty): never let a browser sniff it as something else.
+    res.set("X-Content-Type-Options", "nosniff");
+    next();
+  });
   app.use(cors({ origin: options.clientOrigin }));
   app.use(express.json({ limit: "10kb" }));
 
@@ -61,7 +68,8 @@ export function createGameServer(options: GameServerOptions) {
   attachSocketIdentity(io, accounts);
   const roomManager = new RoomManager(io, options.persistence, options.wordBank ?? fallbackWordBank, {
     moderationPolicy: options.moderationPolicy,
-    matchSink: matchRecorder
+    matchSink: matchRecorder,
+    reconnectGraceMs: options.roomOptions?.reconnectGraceMs
   });
   registerHandlers(io, roomManager);
 

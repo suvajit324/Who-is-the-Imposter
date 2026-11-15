@@ -15,7 +15,7 @@ export function createPersistence(mongoUri?: string): PersistenceAdapter {
     async connect() {
       if (!mongoUri) return;
       await mongoose.connect(mongoUri);
-      console.log("MongoDB connected. Completed games and word pairs will be persisted.");
+      console.log("MongoDB connected. Accounts, sessions and completed-match records are stored in MongoDB.");
     },
     async saveCompletedGame(state) {
       if (!mongoUri) return;

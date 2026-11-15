@@ -1320,3 +1320,22 @@ a.btn:focus-visible,
     padding: 10px 6px;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Long names                                                          */
+/* ------------------------------------------------------------------ */
+
+/* Names can be 20-24 characters with no spaces (e.g. "the_best_player_2026"):
+   let them wrap inside game cards instead of widening the card on a phone. */
+.leader-row strong,
+.clue-card strong,
+.clue-card span,
+.vote-card strong,
+.vote-card small,
+.stat strong,
+.status-list .badge,
+.winner,
+.history p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

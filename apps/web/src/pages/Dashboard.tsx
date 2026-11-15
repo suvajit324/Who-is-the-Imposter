@@ -18,21 +18,26 @@ export function Dashboard({ onEnter, setError }: { onEnter: (response: EnterRoom
   const invited = roomCode !== "" && roomCode === inviteRoomCode();
   // Signed-in players always play under their username; the server enforces this too.
   const playerName = session ? session.account.username : name;
-  const canSubmitName = playerName.trim().length >= 2;
+  // One request at a time: a double click must not try to take a second seat.
+  const [pending, setPending] = useState(false);
+  const canSubmitName = playerName.trim().length >= 2 && !pending;
 
+  const enter = (response: CreateRoomAck) => {
+    setPending(false);
+    if (response.ok) onEnter(response);
+    else setError(response.message);
+  };
   const createRoom = () => {
+    if (pending) return;
     setError("");
-    socket.emit("room:create", { playerName }, (response) => {
-      if (response.ok) onEnter(response);
-      else setError(response.message);
-    });
+    setPending(true);
+    socket.emit("room:create", { playerName }, enter);
   };
   const joinRoom = () => {
+    if (pending) return;
     setError("");
-    socket.emit("room:join", { playerName, roomCode }, (response) => {
-      if (response.ok) onEnter(response);
-      else setError(response.message);
-    });
+    setPending(true);
+    socket.emit("room:join", { playerName, roomCode }, enter);
   };
 
   return (

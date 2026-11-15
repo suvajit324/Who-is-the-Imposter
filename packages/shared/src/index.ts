@@ -225,6 +225,7 @@ export const chatSendSchema = z.object({
 
 export type ServerToClientEvents = {
   "room:state": (state: PublicRoomState) => void;
+  /** Sent only to a player who has been removed from their room (the client then leaves the room view). */
   "room:error": (message: string) => void;
   "player:secret": (secret: PrivateRole) => void;
   "round:result": (result: RoundResult) => void;

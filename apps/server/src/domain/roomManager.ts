@@ -87,6 +87,8 @@ type Room = {
   moderation: ChatModerationGate;
   /** The game being played since the host pressed Start; null in the lobby and after it ends or is cancelled. */
   game: ActiveGame | null;
+  /** Pending removal of the room once nobody is connected (see scheduleEmptyRoomRemoval). */
+  cleanupTimer: NodeJS.Timeout | null;
 };
 
 type ActiveGame = {
@@ -100,6 +102,13 @@ type ActiveGame = {
 /** Receives each completed game's record (see MatchRecorder). */
 export type MatchSink = { record: (match: MatchRecord) => Promise<unknown> };
 
+export type RoomManagerOptions = {
+  moderationPolicy?: ModerationPolicy;
+  matchSink?: MatchSink;
+  /** How long a disconnected player keeps their seat (and an empty room is kept) before cleanup. Tests shorten it. */
+  reconnectGraceMs?: number;
+};
+
 type Persistence = {
   enabled: boolean;
   saveCompletedGame: (state: PublicRoomState) => Promise<void>;
@@ -108,6 +117,7 @@ type Persistence = {
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROLE_REVEAL_SECONDS = 12;
 const RECONNECT_GRACE_MS = 60_000;
+const ALREADY_SEATED = "You are already in a room. Leave it before joining another.";
 /** Rejected clue submissions allowed per player per round (limits probing via validation errors). */
 export const MAX_REJECTED_CLUE_ATTEMPTS = 8;
 /** Phases in which submitted clue text must stay hidden from other players. */
@@ -121,19 +131,23 @@ export class RoomManager {
   private readonly moderationEngine: ModerationEngine;
   private readonly moderationPolicy: ModerationPolicy;
   private readonly matchSink: MatchSink | null;
+  private readonly reconnectGraceMs: number;
 
   constructor(
     private readonly io: GameServer,
     private readonly persistence: Persistence,
     private readonly wordBank = fallbackWordBank,
-    options: { moderationPolicy?: ModerationPolicy; matchSink?: MatchSink } = {}
+    options: RoomManagerOptions = {}
   ) {
     this.moderationEngine = createModerationEngine({ bankWords: wordBank.flatMap((pair) => [pair.wordA, pair.wordB]) });
     this.moderationPolicy = options.moderationPolicy ?? defaultModerationPolicy;
     this.matchSink = options.matchSink ?? null;
+    this.reconnectGraceMs = options.reconnectGraceMs ?? RECONNECT_GRACE_MS;
   }
 
   createRoom(socket: GameSocket, playerName: string, ip = "unknown"): CreateRoomAck {
+    // One seat per connection: a second room would leave the first seat "connected" forever.
+    if (this.context(socket)) return { ok: false, message: ALREADY_SEATED };
     if (this.tooSoon(ip)) return { ok: false, message: "Please wait a moment before creating another room." };
     const code = this.generateUniqueCode();
     const player = this.createPlayer(playerName, socket.id, true, socket);
@@ -155,7 +169,8 @@ export class RoomManager {
       lastEntryAtByIp: new Map([[ip, Date.now()]]),
       chat: new RoomChat(code),
       moderation: new ChatModerationGate(this.moderationEngine, this.moderationPolicy),
-      game: null
+      game: null,
+      cleanupTimer: null
     };
     this.rooms.set(code, room);
     this.attachSocket(socket, room, player);
@@ -164,6 +179,7 @@ export class RoomManager {
   }
 
   joinRoom(socket: GameSocket, roomCode: string, playerName: string, ip = "unknown"): CreateRoomAck {
+    if (this.context(socket)) return { ok: false, message: ALREADY_SEATED };
     const room = this.rooms.get(roomCode.toUpperCase());
     if (!room) return { ok: false, message: "Room not found. Check the code and try again." };
     if (room.phase !== "LOBBY") return { ok: false, message: "This game has already started." };
@@ -187,6 +203,8 @@ export class RoomManager {
   }
 
   reconnect(socket: GameSocket, roomCode: string, playerId: string, token: string): CreateRoomAck {
+    const current = this.context(socket);
+    if (current && current.player.id !== playerId) return { ok: false, message: ALREADY_SEATED };
     const room = this.rooms.get(roomCode.toUpperCase());
     const player = room?.players.get(playerId);
     // An account's seat can only be resumed by the same account (same generic error either way).
@@ -244,6 +262,7 @@ export class RoomManager {
     }
     this.broadcast(context.room);
     this.postSystem(context.room, `${target.name} was removed by the host.`);
+    this.afterPlayerRemoved(context.room, target.id);
     return { ok: true };
   }
 
@@ -374,6 +393,8 @@ export class RoomManager {
       player.score = 0;
       player.ready = player.host;
       player.roleAcked = false;
+      // Players who left the results screen get the usual lobby grace period, then their seat is freed.
+      if (!player.connected) this.scheduleLobbyRemoval(room, player.id);
     }
     // A rematch is a genuinely new game: start a fresh chat log.
     room.chat.reset();
@@ -419,6 +440,9 @@ export class RoomManager {
     const context = this.context(socket);
     if (!context) return;
     const { room, player } = context;
+    // The seat was already resumed on a newer connection (a network drop the server noticed
+    // late, or a second tab). Closing the old connection must not mark the player offline.
+    if (player.socketId !== socket.id) return;
     player.connected = false;
     player.socketId = null;
     player.disconnectedAt = Date.now();
@@ -435,6 +459,37 @@ export class RoomManager {
     }
     this.transferHostIfNeeded(room);
     this.broadcast(room);
+    if (this.connectedPlayers(room).length === 0) this.scheduleEmptyRoomRemoval(room);
+  }
+
+  /**
+   * Keeps a game in progress consistent after the host removes a player: it is cancelled
+   * when too few players remain (as for disconnects), votes for the removed player are
+   * withdrawn so those voters can choose again, and the phase moves on if everyone left
+   * has already done their part instead of waiting out the timer.
+   */
+  private afterPlayerRemoved(room: Room, removedId: string): void {
+    if (!ACTIVE_GAME_PHASES.includes(room.phase) || !room.round) return;
+    if (this.connectedPlayers(room).length < MIN_PLAYERS) {
+      this.cancelRoom(room, "Too few players remain to continue.");
+      return;
+    }
+    const round = room.round;
+    for (const votes of [round.votes, round.runoffVotes]) {
+      for (const [voterId, targetId] of votes) if (voterId === removedId || targetId === removedId) votes.delete(voterId);
+    }
+    round.runoffCandidateIds = round.runoffCandidateIds.filter((id) => id !== removedId);
+
+    const connected = this.connectedPlayers(room);
+    if (room.phase === "ROLE_ASSIGNMENT" && connected.every((player) => player.roleAcked)) {
+      this.startClues(room);
+    } else if (room.phase === "CLUE_PHASE" && connected.every((player) => round.clues.has(player.id))) {
+      this.advanceAfterClues(room);
+    } else if (["VOTING", "RUNOFF_VOTING"].includes(room.phase)) {
+      const votes = this.currentVoteMap(room);
+      if (this.eligiblePlayerIds(room).every((id) => votes.has(id))) this.finishVoting(room);
+      else this.broadcast(room);
+    }
   }
 
   private beginRound(room: Room): void {
@@ -776,15 +831,18 @@ export class RoomManager {
   }
 
   private scheduleLobbyRemoval(room: Room, playerId: string): void {
+    const disconnectedAt = room.players.get(playerId)?.disconnectedAt;
     setTimeout(() => {
       const player = room.players.get(playerId);
       if (!player || player.connected || room.phase !== "LOBBY") return;
+      // The player came back and left again since: that later disconnect has its own full grace period.
+      if (player.disconnectedAt !== disconnectedAt) return;
       room.players.delete(playerId);
       this.transferHostIfNeeded(room);
       this.broadcast(room);
       this.postSystem(room, `${player.name} left the room.`);
       if (room.players.size === 0) this.destroyRoom(room);
-    }, RECONNECT_GRACE_MS);
+    }, this.reconnectGraceMs);
   }
 
   private scheduleGameDisconnectCheck(room: Room, playerId: string): void {
@@ -793,12 +851,29 @@ export class RoomManager {
       if (!player || player.connected || room.phase === "GAME_END" || room.phase === "CANCELLED") return;
       this.broadcast(room);
       if (this.connectedPlayers(room).length < MIN_PLAYERS) this.cancelRoom(room, "Too few players reconnected before the grace period ended.");
-    }, RECONNECT_GRACE_MS);
+    }, this.reconnectGraceMs);
+  }
+
+  /**
+   * Frees a room that nobody has reconnected to within the grace period, in any phase.
+   * Lobbies already empty themselves; without this, finished or cancelled rooms whose
+   * players all left would stay in memory until the server restarts.
+   */
+  private scheduleEmptyRoomRemoval(room: Room): void {
+    // Restart the wait each time the room empties, so a player who briefly came back keeps a full grace period.
+    if (room.cleanupTimer) clearTimeout(room.cleanupTimer);
+    room.cleanupTimer = setTimeout(() => {
+      room.cleanupTimer = null;
+      if (this.connectedPlayers(room).length === 0) this.destroyRoom(room);
+    }, this.reconnectGraceMs);
   }
 
   private destroyRoom(room: Room): void {
     this.clearTimer(room);
-    this.rooms.delete(room.code);
+    if (room.cleanupTimer) clearTimeout(room.cleanupTimer);
+    room.cleanupTimer = null;
+    // Only remove this exact room: its code may already belong to a newer room.
+    if (this.rooms.get(room.code) === room) this.rooms.delete(room.code);
   }
 
   private createPlayer(name: string, socketId: string, host: boolean, socket: GameSocket): Player {

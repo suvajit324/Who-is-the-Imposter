@@ -19,6 +19,17 @@ export class FixedWindowLimiter {
     return Boolean(entry && entry.resetAt > this.now() && entry.count >= this.limit);
   }
 
+  /**
+   * Checks and records in one synchronous step: returns false (recording nothing) when the
+   * key is limited, otherwise counts this attempt and returns true. Callers that check now
+   * and record after an `await` would let a burst of parallel requests all pass the check.
+   */
+  consume(key: string): boolean {
+    if (this.isLimited(key)) return false;
+    this.record(key);
+    return true;
+  }
+
   record(key: string): void {
     const now = this.now();
     const entry = this.windows.get(key);
