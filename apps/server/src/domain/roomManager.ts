@@ -10,6 +10,7 @@ import {
   type CreateRoomAck,
   type GamePhase,
   type GameSettings,
+  type PlayerProfileRef,
   type PrivateRole,
   type PublicClue,
   type PublicPlayer,
@@ -21,7 +22,10 @@ import {
 } from "@imposter/shared";
 import { fallbackWordBank, type WordPair } from "../data/wordBank.js";
 import { ChatModerationGate, createModerationEngine, defaultModerationPolicy, type ModerationEngine, type ModerationPolicy } from "../moderation/index.js";
+import { socketIdentity } from "../socket/identity.js";
+import type { MatchRecord } from "../store/index.js";
 import { RoomChat } from "./chat.js";
+import { buildMatchRecord } from "./matchRecord.js";
 import { validateClue } from "./clues.js";
 import { selectImposter } from "./imposter.js";
 import { calculateScores } from "./scoring.js";
@@ -42,6 +46,10 @@ type Player = {
   score: number;
   disconnectedAt: number | null;
   roleAcked: boolean;
+  /** Account id for a signed-in player; null for guests. Server-side only. */
+  userId: string | null;
+  /** Public profile shown in the room for signed-in players; null for guests. */
+  profile: PlayerProfileRef | null;
 };
 
 type RoundState = {
@@ -77,6 +85,28 @@ type Room = {
   lastEntryAtByIp: Map<string, number>;
   chat: RoomChat;
   moderation: ChatModerationGate;
+  /** The game being played since the host pressed Start; null in the lobby and after it ends or is cancelled. */
+  game: ActiveGame | null;
+  /** Pending removal of the room once nobody is connected (see scheduleEmptyRoomRemoval). */
+  cleanupTimer: NodeJS.Timeout | null;
+};
+
+type ActiveGame = {
+  /** Random id; the completed-match record is stored under it, so a game is saved at most once. */
+  id: string;
+  startedAt: number;
+  /** Players dealt in at the start. Players still in the lobby but disconnected at that moment are not. */
+  rosterIds: Set<string>;
+};
+
+/** Receives each completed game's record (see MatchRecorder). */
+export type MatchSink = { record: (match: MatchRecord) => Promise<unknown> };
+
+export type RoomManagerOptions = {
+  moderationPolicy?: ModerationPolicy;
+  matchSink?: MatchSink;
+  /** How long a disconnected player keeps their seat (and an empty room is kept) before cleanup. Tests shorten it. */
+  reconnectGraceMs?: number;
 };
 
 type Persistence = {
@@ -87,31 +117,40 @@ type Persistence = {
 const ROOM_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const ROLE_REVEAL_SECONDS = 12;
 const RECONNECT_GRACE_MS = 60_000;
+const ALREADY_SEATED = "You are already in a room. Leave it before joining another.";
 /** Rejected clue submissions allowed per player per round (limits probing via validation errors). */
 export const MAX_REJECTED_CLUE_ATTEMPTS = 8;
 /** Phases in which submitted clue text must stay hidden from other players. */
 const CLUE_TEXT_HIDDEN_PHASES: GamePhase[] = ["ROLE_ASSIGNMENT", "CLUE_PHASE"];
+/** Phases of a game that is still being played (between "Start Game" and the final result). */
+const ACTIVE_GAME_PHASES: GamePhase[] = ["ROLE_ASSIGNMENT", "CLUE_PHASE", "DISCUSSION", "VOTING", "RUNOFF_VOTING", "VOTE_RESULT"];
 
 export class RoomManager {
   private rooms = new Map<string, Room>();
 
   private readonly moderationEngine: ModerationEngine;
   private readonly moderationPolicy: ModerationPolicy;
+  private readonly matchSink: MatchSink | null;
+  private readonly reconnectGraceMs: number;
 
   constructor(
     private readonly io: GameServer,
     private readonly persistence: Persistence,
     private readonly wordBank = fallbackWordBank,
-    options: { moderationPolicy?: ModerationPolicy } = {}
+    options: RoomManagerOptions = {}
   ) {
     this.moderationEngine = createModerationEngine({ bankWords: wordBank.flatMap((pair) => [pair.wordA, pair.wordB]) });
     this.moderationPolicy = options.moderationPolicy ?? defaultModerationPolicy;
+    this.matchSink = options.matchSink ?? null;
+    this.reconnectGraceMs = options.reconnectGraceMs ?? RECONNECT_GRACE_MS;
   }
 
   createRoom(socket: GameSocket, playerName: string, ip = "unknown"): CreateRoomAck {
+    // One seat per connection: a second room would leave the first seat "connected" forever.
+    if (this.context(socket)) return { ok: false, message: ALREADY_SEATED };
     if (this.tooSoon(ip)) return { ok: false, message: "Please wait a moment before creating another room." };
     const code = this.generateUniqueCode();
-    const player = this.createPlayer(playerName, socket.id, true);
+    const player = this.createPlayer(playerName, socket.id, true, socket);
     const room: Room = {
       code,
       phase: "LOBBY",
@@ -129,7 +168,9 @@ export class RoomManager {
       createdAt: Date.now(),
       lastEntryAtByIp: new Map([[ip, Date.now()]]),
       chat: new RoomChat(code),
-      moderation: new ChatModerationGate(this.moderationEngine, this.moderationPolicy)
+      moderation: new ChatModerationGate(this.moderationEngine, this.moderationPolicy),
+      game: null,
+      cleanupTimer: null
     };
     this.rooms.set(code, room);
     this.attachSocket(socket, room, player);
@@ -138,14 +179,21 @@ export class RoomManager {
   }
 
   joinRoom(socket: GameSocket, roomCode: string, playerName: string, ip = "unknown"): CreateRoomAck {
+    if (this.context(socket)) return { ok: false, message: ALREADY_SEATED };
     const room = this.rooms.get(roomCode.toUpperCase());
     if (!room) return { ok: false, message: "Room not found. Check the code and try again." };
     if (room.phase !== "LOBBY") return { ok: false, message: "This game has already started." };
     if (room.players.size >= MAX_PLAYERS) return { ok: false, message: "This room is full." };
-    const duplicate = [...room.players.values()].some((player) => player.name.toLowerCase() === playerName.trim().toLowerCase());
+    const identity = socketIdentity(socket);
+    if (identity && [...room.players.values()].some((player) => player.userId === identity.userId)) {
+      return { ok: false, message: "Your account is already playing in this room." };
+    }
+    // Signed-in players always appear under their username; guests choose a display name.
+    const name = identity ? identity.username : playerName;
+    const duplicate = [...room.players.values()].some((player) => player.name.toLowerCase() === name.trim().toLowerCase());
     if (duplicate) return { ok: false, message: "That player name is already taken in this room." };
 
-    const player = this.createPlayer(playerName, socket.id, false);
+    const player = this.createPlayer(playerName, socket.id, false, socket);
     room.players.set(player.id, player);
     room.lastEntryAtByIp.set(ip, Date.now());
     this.attachSocket(socket, room, player);
@@ -155,9 +203,13 @@ export class RoomManager {
   }
 
   reconnect(socket: GameSocket, roomCode: string, playerId: string, token: string): CreateRoomAck {
+    const current = this.context(socket);
+    if (current && current.player.id !== playerId) return { ok: false, message: ALREADY_SEATED };
     const room = this.rooms.get(roomCode.toUpperCase());
     const player = room?.players.get(playerId);
-    if (!room || !player || !this.tokenMatches(player.reconnectToken, token)) {
+    // An account's seat can only be resumed by the same account (same generic error either way).
+    const sameAccount = !player?.userId || socketIdentity(socket)?.userId === player.userId;
+    if (!room || !player || !this.tokenMatches(player.reconnectToken, token) || !sameAccount) {
       return { ok: false, message: "Reconnect failed. Please rejoin from the lobby if the game has not started." };
     }
     const wasDisconnected = !player.connected;
@@ -210,6 +262,7 @@ export class RoomManager {
     }
     this.broadcast(context.room);
     this.postSystem(context.room, `${target.name} was removed by the host.`);
+    this.afterPlayerRemoved(context.room, target.id);
     return { ok: true };
   }
 
@@ -225,6 +278,7 @@ export class RoomManager {
     if (matchingWordPairs(this.wordBank, room.settings).length === 0) {
       return { ok: false, message: "No word pairs match this category and difficulty. Choose a different combination." };
     }
+    room.game = { id: randomUUID(), startedAt: Date.now(), rosterIds: new Set(connected.map((candidate) => candidate.id)) };
     this.beginRound(room);
     return { ok: true };
   }
@@ -334,10 +388,13 @@ export class RoomManager {
     room.imposterCounts = {};
     room.deadline = null;
     room.cancelledReason = null;
+    room.game = null;
     for (const player of room.players.values()) {
       player.score = 0;
       player.ready = player.host;
       player.roleAcked = false;
+      // Players who left the results screen get the usual lobby grace period, then their seat is freed.
+      if (!player.connected) this.scheduleLobbyRemoval(room, player.id);
     }
     // A rematch is a genuinely new game: start a fresh chat log.
     room.chat.reset();
@@ -383,6 +440,9 @@ export class RoomManager {
     const context = this.context(socket);
     if (!context) return;
     const { room, player } = context;
+    // The seat was already resumed on a newer connection (a network drop the server noticed
+    // late, or a second tab). Closing the old connection must not mark the player offline.
+    if (player.socketId !== socket.id) return;
     player.connected = false;
     player.socketId = null;
     player.disconnectedAt = Date.now();
@@ -390,7 +450,8 @@ export class RoomManager {
     this.postSystem(room, `${player.name} disconnected.`);
     if (room.phase === "LOBBY") {
       this.scheduleLobbyRemoval(room, player.id);
-    } else {
+    } else if (ACTIVE_GAME_PHASES.includes(room.phase)) {
+      // Only a game that is still being played can be cancelled; a finished game stays finished.
       this.scheduleGameDisconnectCheck(room, player.id);
       if (this.connectedPlayers(room).length < MIN_PLAYERS) {
         this.cancelRoom(room, "Too few connected players remain to continue.");
@@ -398,6 +459,37 @@ export class RoomManager {
     }
     this.transferHostIfNeeded(room);
     this.broadcast(room);
+    if (this.connectedPlayers(room).length === 0) this.scheduleEmptyRoomRemoval(room);
+  }
+
+  /**
+   * Keeps a game in progress consistent after the host removes a player: it is cancelled
+   * when too few players remain (as for disconnects), votes for the removed player are
+   * withdrawn so those voters can choose again, and the phase moves on if everyone left
+   * has already done their part instead of waiting out the timer.
+   */
+  private afterPlayerRemoved(room: Room, removedId: string): void {
+    if (!ACTIVE_GAME_PHASES.includes(room.phase) || !room.round) return;
+    if (this.connectedPlayers(room).length < MIN_PLAYERS) {
+      this.cancelRoom(room, "Too few players remain to continue.");
+      return;
+    }
+    const round = room.round;
+    for (const votes of [round.votes, round.runoffVotes]) {
+      for (const [voterId, targetId] of votes) if (voterId === removedId || targetId === removedId) votes.delete(voterId);
+    }
+    round.runoffCandidateIds = round.runoffCandidateIds.filter((id) => id !== removedId);
+
+    const connected = this.connectedPlayers(room);
+    if (room.phase === "ROLE_ASSIGNMENT" && connected.every((player) => player.roleAcked)) {
+      this.startClues(room);
+    } else if (room.phase === "CLUE_PHASE" && connected.every((player) => round.clues.has(player.id))) {
+      this.advanceAfterClues(room);
+    } else if (["VOTING", "RUNOFF_VOTING"].includes(room.phase)) {
+      const votes = this.currentVoteMap(room);
+      if (this.eligiblePlayerIds(room).every((id) => votes.has(id))) this.finishVoting(room);
+      else this.broadcast(room);
+    }
   }
 
   private beginRound(room: Room): void {
@@ -537,10 +629,53 @@ export class RoomManager {
     this.clearTimer(room);
     this.broadcast(room);
     this.postSystem(room, "The game has ended. Chat is closed.");
-    void this.persistence.saveCompletedGame(this.publicState(room));
+    // A database failure must never take the server (and every other room) down.
+    this.persistence.saveCompletedGame(this.publicState(room)).catch((error: unknown) => {
+      console.error("[persistence] Failed to save the completed game:", error);
+    });
+    this.recordCompletedGame(room);
+  }
+
+  /**
+   * Hands the finished game's result to the match recorder. The record is a snapshot taken
+   * now, so players leaving the results screen or a quick rematch cannot change it, and
+   * clearing room.game first means this game can never be recorded twice.
+   */
+  private recordCompletedGame(room: Room): void {
+    const game = room.game;
+    room.game = null;
+    if (!game || !this.matchSink) return;
+    const sink = this.matchSink;
+    try {
+      const decision = buildMatchRecord({
+        gameId: game.id,
+        startedAt: game.startedAt,
+        endedAt: Date.now(),
+        settings: room.settings,
+        roundsPlayed: room.roundHistory.length,
+        rosterIds: game.rosterIds,
+        seats: [...room.players.values()].map((player) => ({
+          playerId: player.id,
+          name: player.name,
+          userId: player.userId,
+          avatar: player.profile?.avatar ?? null,
+          score: player.score,
+          connected: player.connected
+        }))
+      });
+      if (!decision.record) return;
+      sink.record(decision.record).catch((error: unknown) => {
+        console.error("[matches] Unexpected error while recording a completed game:", error);
+      });
+    } catch (error) {
+      // Recording is secondary: the game has already ended correctly for every player.
+      console.error("[matches] Could not build the completed-game record:", error);
+    }
   }
 
   private cancelRoom(room: Room, reason: string): void {
+    // A cancelled game is never recorded: it has no result.
+    room.game = null;
     room.phase = "CANCELLED";
     room.cancelledReason = reason;
     this.clearTimer(room);
@@ -576,7 +711,8 @@ export class RoomManager {
         host: player.host,
         score: player.score,
         submittedClue: Boolean(room.round?.clues.has(player.id)),
-        submittedVote: this.hasSubmittedCurrentVote(room, player.id)
+        submittedVote: this.hasSubmittedCurrentVote(room, player.id),
+        profile: player.profile ? { username: player.profile.username, avatar: player.profile.avatar } : null
       })),
       hostId: [...room.players.values()].find((player) => player.host)?.id ?? null,
       settings: room.settings,
@@ -695,15 +831,18 @@ export class RoomManager {
   }
 
   private scheduleLobbyRemoval(room: Room, playerId: string): void {
+    const disconnectedAt = room.players.get(playerId)?.disconnectedAt;
     setTimeout(() => {
       const player = room.players.get(playerId);
       if (!player || player.connected || room.phase !== "LOBBY") return;
+      // The player came back and left again since: that later disconnect has its own full grace period.
+      if (player.disconnectedAt !== disconnectedAt) return;
       room.players.delete(playerId);
       this.transferHostIfNeeded(room);
       this.broadcast(room);
       this.postSystem(room, `${player.name} left the room.`);
       if (room.players.size === 0) this.destroyRoom(room);
-    }, RECONNECT_GRACE_MS);
+    }, this.reconnectGraceMs);
   }
 
   private scheduleGameDisconnectCheck(room: Room, playerId: string): void {
@@ -712,18 +851,36 @@ export class RoomManager {
       if (!player || player.connected || room.phase === "GAME_END" || room.phase === "CANCELLED") return;
       this.broadcast(room);
       if (this.connectedPlayers(room).length < MIN_PLAYERS) this.cancelRoom(room, "Too few players reconnected before the grace period ended.");
-    }, RECONNECT_GRACE_MS);
+    }, this.reconnectGraceMs);
+  }
+
+  /**
+   * Frees a room that nobody has reconnected to within the grace period, in any phase.
+   * Lobbies already empty themselves; without this, finished or cancelled rooms whose
+   * players all left would stay in memory until the server restarts.
+   */
+  private scheduleEmptyRoomRemoval(room: Room): void {
+    // Restart the wait each time the room empties, so a player who briefly came back keeps a full grace period.
+    if (room.cleanupTimer) clearTimeout(room.cleanupTimer);
+    room.cleanupTimer = setTimeout(() => {
+      room.cleanupTimer = null;
+      if (this.connectedPlayers(room).length === 0) this.destroyRoom(room);
+    }, this.reconnectGraceMs);
   }
 
   private destroyRoom(room: Room): void {
     this.clearTimer(room);
-    this.rooms.delete(room.code);
+    if (room.cleanupTimer) clearTimeout(room.cleanupTimer);
+    room.cleanupTimer = null;
+    // Only remove this exact room: its code may already belong to a newer room.
+    if (this.rooms.get(room.code) === room) this.rooms.delete(room.code);
   }
 
-  private createPlayer(name: string, socketId: string, host: boolean): Player {
+  private createPlayer(name: string, socketId: string, host: boolean, socket: GameSocket): Player {
+    const identity = socketIdentity(socket);
     return {
       id: randomUUID(),
-      name: name.trim(),
+      name: identity ? identity.username : name.trim(),
       socketId,
       reconnectToken: randomBytes(32).toString("base64url"),
       connected: true,
@@ -731,7 +888,9 @@ export class RoomManager {
       host,
       score: 0,
       disconnectedAt: null,
-      roleAcked: false
+      roleAcked: false,
+      userId: identity?.userId ?? null,
+      profile: identity ? { username: identity.username, avatar: identity.avatar } : null
     };
   }
 

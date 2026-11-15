@@ -24,8 +24,10 @@ export function calculateScores(input: ScoreInput): Record<string, number> {
   }
 
   const imposterCaught = input.selectedPlayerId === input.imposterId;
-  if (!imposterCaught) points[input.imposterId] += SCORE.IMPOSTER_ESCAPE;
-  if (imposterCaught && input.imposterGuessCorrect) points[input.imposterId] += SCORE.IMPOSTER_WORD_GUESS;
+  // The Imposter may have been removed from the room mid-round; never award points to a missing player.
+  const imposterPresent = Object.hasOwn(points, input.imposterId);
+  if (imposterPresent && !imposterCaught) points[input.imposterId] += SCORE.IMPOSTER_ESCAPE;
+  if (imposterPresent && imposterCaught && input.imposterGuessCorrect) points[input.imposterId] += SCORE.IMPOSTER_WORD_GUESS;
 
   const normalVoters = input.playerIds.filter((id) => id !== input.imposterId);
   const correctNormalVotes = normalVoters.filter((id) => input.votes.get(id) === input.imposterId).length;
