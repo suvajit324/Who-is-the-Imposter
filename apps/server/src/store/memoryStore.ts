@@ -69,15 +69,26 @@ export class MemoryStore implements Store {
     return "saved";
   }
 
-  async listMatchesForUser(userId: string, options: { countedOnly?: boolean; limit?: number } = {}): Promise<MatchRecord[]> {
-    const rows = [...this.matches.values()]
-      .filter((match) => (!options.countedOnly || match.counted) && match.participants.some((participant) => participant.userId === userId))
-      .sort((a, b) => b.endedAt.getTime() - a.endedAt.getTime());
-    return structuredClone(options.limit === undefined ? rows : rows.slice(0, options.limit));
+  async listMatchesForUser(userId: string, options: { countedOnly?: boolean; limit?: number; skip?: number } = {}): Promise<MatchRecord[]> {
+    const rows = this.matchesFor(userId, options.countedOnly).sort(
+      (a, b) => b.endedAt.getTime() - a.endedAt.getTime() || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
+    );
+    const skip = options.skip ?? 0;
+    return structuredClone(rows.slice(skip, options.limit === undefined ? undefined : skip + options.limit));
+  }
+
+  async countMatchesForUser(userId: string, options: { countedOnly?: boolean } = {}): Promise<number> {
+    return this.matchesFor(userId, options.countedOnly).length;
   }
 
   async listCountedMatches(): Promise<MatchRecord[]> {
     return structuredClone([...this.matches.values()].filter((match) => match.counted));
+  }
+
+  private matchesFor(userId: string, countedOnly = false): MatchRecord[] {
+    return [...this.matches.values()].filter(
+      (match) => (!countedOnly || match.counted) && match.participants.some((participant) => participant.userId === userId)
+    );
   }
 
   /** Expired sessions are useless; drop them so a long-running demo does not grow without bound. */

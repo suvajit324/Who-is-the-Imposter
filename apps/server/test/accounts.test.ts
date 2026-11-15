@@ -210,8 +210,7 @@ describe("profile", () => {
     expect(response.status).toBe(200);
     const profile = profileResponseSchema.parse(response.body);
     expect(profile.profile).toEqual({ username: "Oscar", avatar: "bot", joinedAt: expect.any(String) });
-    expect(profile.stats).toEqual({ gamesPlayed: 0, wins: 0, draws: 0, losses: 0, winRatePercent: null, totalPoints: 0 });
-    expect(profile.recentMatches).toEqual([]);
+    expect(profile.stats).toEqual({ gamesPlayed: 0, wins: 0, draws: 0, losses: 0, winRatePercent: null, totalPoints: 0, bestScore: null });
     const user = (await server.store.findUserByUsernameKey("oscar"))!;
     expect(response.text.includes(user.id)).toBe(false);
     expect(response.text.includes("scrypt")).toBe(false);

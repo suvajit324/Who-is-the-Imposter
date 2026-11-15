@@ -10,6 +10,8 @@ import { createApiRouter, jsonErrorHandler } from "./http/api.js";
 import type { ModerationPolicy } from "./moderation/index.js";
 import { attachSocketIdentity, disconnectSession } from "./socket/identity.js";
 import { registerHandlers } from "./socket/registerHandlers.js";
+import { MatchRecorder, type MatchRecorderOptions } from "./stats/matchRecorder.js";
+import { StatsService } from "./stats/statsService.js";
 import type { Store } from "./store/index.js";
 
 export type GameServerOptions = {
@@ -20,6 +22,7 @@ export type GameServerOptions = {
   wordBank?: WordPair[];
   moderationPolicy?: ModerationPolicy;
   accountOptions?: AccountServiceOptions;
+  matchRecorderOptions?: MatchRecorderOptions;
 };
 
 /**
@@ -50,14 +53,17 @@ export function createGameServer(options: GameServerOptions) {
   });
 
   const accounts = new AccountService(options.store, options.accountOptions);
-  app.use("/api", createApiRouter({ accounts, onSessionRevoked: (hash) => disconnectSession(io, hash) }));
+  const stats = new StatsService(options.store);
+  const matchRecorder = new MatchRecorder(options.store, options.matchRecorderOptions);
+  app.use("/api", createApiRouter({ accounts, stats, onSessionRevoked: (hash) => disconnectSession(io, hash) }));
   app.use(jsonErrorHandler);
 
   attachSocketIdentity(io, accounts);
   const roomManager = new RoomManager(io, options.persistence, options.wordBank ?? fallbackWordBank, {
-    moderationPolicy: options.moderationPolicy
+    moderationPolicy: options.moderationPolicy,
+    matchSink: matchRecorder
   });
   registerHandlers(io, roomManager);
 
-  return { app, httpServer, io, roomManager, accounts };
+  return { app, httpServer, io, roomManager, accounts, stats, matchRecorder };
 }

@@ -3,11 +3,13 @@ import {
   authResponseSchema,
   healthResponseSchema,
   leaderboardResponseSchema,
+  matchHistoryResponseSchema,
   profileResponseSchema,
   type Account,
   type AuthResponse,
   type AvatarId,
   type LeaderboardResponse,
+  type MatchHistoryResponse,
   type ProfileResponse,
   type StorageMode
 } from "@imposter/shared";
@@ -74,6 +76,9 @@ export const api = {
   updateAvatar: (avatar: AvatarId): Promise<Account> => request("/api/me", accountSchema, { method: "PATCH", body: { avatar }, auth: true }),
   profile: (username: string): Promise<ProfileResponse> => request(`/api/players/${encodeURIComponent(username)}`, profileResponseSchema),
   leaderboard: (): Promise<LeaderboardResponse> => request("/api/leaderboard", leaderboardResponseSchema),
+  /** The signed-in player's own completed matches (the server decides whose, from the token). */
+  matchHistory: (page: number): Promise<MatchHistoryResponse> =>
+    request(`/api/me/matches?page=${encodeURIComponent(String(page))}`, matchHistoryResponseSchema, { auth: true }),
   /** Where the server keeps accounts right now, or null when it cannot be reached. */
   storageMode: async (): Promise<StorageMode | null> => {
     const health = await request("/health", healthResponseSchema).catch(() => null);

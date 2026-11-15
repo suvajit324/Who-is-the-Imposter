@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { BadgeCheck, LogIn, LogOut, Save } from "lucide-react";
+import { BadgeCheck, History, LogIn, LogOut, Save } from "lucide-react";
 import type { AvatarId, ProfileResponse } from "@imposter/shared";
 import { Avatar, AvatarPicker } from "../components/Avatar.js";
+import { StatsPanel } from "../components/StatsPanel.js";
 import { Button, Panel } from "../components/ui.js";
 import { api, ApiError } from "../state/api.js";
 import { hrefFor, navigate } from "../state/router.js";
@@ -104,7 +105,14 @@ export function ProfilePage() {
         </div>
       </Panel>
 
-      <ProfileDetails profile={profile} error={error} />
+      <ProfileDetails profile={profile} error={error} title="Your statistics" />
+      <Panel className="history-teaser">
+        <div>
+          <h2>Match history</h2>
+          <p className="muted">Every completed game you played while signed in, with final standings.</p>
+        </div>
+        <a className="btn btn-secondary" href={hrefFor({ name: "history" })}><History size={18} />View match history</a>
+      </Panel>
     </section>
   );
 }
@@ -126,13 +134,13 @@ export function PlayerPage({ username }: { username: string }) {
           {loading && <p className="muted">Loading...</p>}
         </div>
       </Panel>
-      <ProfileDetails profile={profile} error={error} />
+      <ProfileDetails profile={profile} error={error} title="Statistics" />
     </section>
   );
 }
 
-function ProfileDetails({ profile, error }: { profile: ProfileResponse | null; error: string }) {
+function ProfileDetails({ profile, error, title }: { profile: ProfileResponse | null; error: string; title: string }) {
   if (error) return <Panel><p className="form-error" role="alert">{error}</p></Panel>;
-  if (!profile) return null;
-  return null;
+  if (!profile) return <Panel><p className="muted" role="status">Loading statistics...</p></Panel>;
+  return <StatsPanel stats={profile.stats} title={title} />;
 }

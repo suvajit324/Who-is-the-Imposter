@@ -35,6 +35,8 @@ import { ChatBox } from "./components/chat/ChatBox.js";
 import { Dashboard, type EnterRoomResponse } from "./pages/Dashboard.js";
 import { AuthPage } from "./pages/AuthPage.js";
 import { PlayerPage, ProfilePage } from "./pages/ProfilePage.js";
+import { MatchHistoryPage } from "./pages/MatchHistoryPage.js";
+import { LeaderboardPage } from "./pages/LeaderboardPage.js";
 
 type Credentials = { roomCode: string; playerId: string; reconnectToken: string };
 
@@ -159,6 +161,7 @@ export function App() {
           {!state && (
             <>
               <NavLink route={{ name: "home" }} current={route}>Play</NavLink>
+              <NavLink route={{ name: "leaderboard" }} current={route}>Leaderboard</NavLink>
               {account ? (
                 <a className={route.name === "profile" ? "nav-account active" : "nav-account"} href={hrefFor({ name: "profile" })}>
                   <Avatar avatar={account.avatar} size="sm" />
@@ -223,6 +226,10 @@ function Page({ route, onEnter, setError }: { route: Route; onEnter: (response: 
       return <ProfilePage />;
     case "player":
       return <PlayerPage username={route.username} key={route.username} />;
+    case "history":
+      return <MatchHistoryPage />;
+    case "leaderboard":
+      return <LeaderboardPage />;
     default:
       return <Dashboard onEnter={onEnter} setError={setError} />;
   }

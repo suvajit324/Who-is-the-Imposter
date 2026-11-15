@@ -1,6 +1,6 @@
 import mongoose, { Schema } from "mongoose";
 import type { AvatarId, StorageMode } from "@imposter/shared";
-import type { MatchParticipantRecord, MatchRecord, MatchRoundRecord, SessionRecord, Store, UserRecord } from "./types.js";
+import type { MatchParticipantRecord, MatchRecord, SessionRecord, Store, UserRecord } from "./types.js";
 
 /*
  * MongoDB store. Uses the default mongoose connection opened by persistence.connect().
@@ -40,38 +40,29 @@ const participantSchema = new Schema(
     avatar: { type: String, default: null },
     finalScore: { type: Number, required: true },
     finalRank: { type: Number, required: true },
-    outcome: { type: String, required: true }
+    outcome: { type: String, required: true, enum: ["win", "draw", "loss"] },
+    connectedAtEnd: { type: Boolean, required: true }
   },
   { _id: false }
 );
 
-const roundSchema = new Schema(
-  {
-    roundNumber: { type: Number, required: true },
-    imposterSeat: { type: Number, default: null },
-    mainWord: { type: String, required: true },
-    imposterWord: { type: String, required: true },
-    imposterCaught: { type: Boolean, required: true },
-    imposterGuessCorrect: { type: Boolean, required: true },
-    points: [new Schema({ seat: { type: Number, required: true }, points: { type: Number, required: true } }, { _id: false })]
-  },
-  { _id: false }
-);
-
+// A completed game. No words, clues, roles, votes or room code are stored.
 const matchSchema = new Schema(
   {
     _id: { type: String, required: true },
+    status: { type: String, required: true, enum: ["completed"] },
     startedAt: { type: Date, required: true },
     endedAt: { type: Date, required: true },
+    durationSeconds: { type: Number, required: true },
     counted: { type: Boolean, required: true },
-    wordSource: { type: String, required: true },
+    wordSource: { type: String, required: true, enum: ["curated", "custom"] },
     settings: {
       categories: [{ type: String }],
       difficulty: { type: String, required: true },
       rounds: { type: Number, required: true }
     },
-    participants: [participantSchema],
-    rounds: [roundSchema]
+    roundsPlayed: { type: Number, required: true },
+    participants: { type: [participantSchema], required: true }
   },
   { versionKey: false, collection: "matches" }
 );
@@ -81,6 +72,13 @@ matchSchema.index({ counted: 1, endedAt: -1 });
 const UserModel = mongoose.models.ImposterUser ?? mongoose.model("ImposterUser", userSchema);
 const SessionModel = mongoose.models.ImposterSession ?? mongoose.model("ImposterSession", sessionSchema);
 const MatchModel = mongoose.models.ImposterMatch ?? mongoose.model("ImposterMatch", matchSchema);
+
+function matchFilter(userId: string, countedOnly = false): Record<string, unknown> {
+  // userId is always a server-generated string; `$eq` keeps it from ever being read as an operator.
+  const filter: Record<string, unknown> = { "participants.userId": { $eq: userId } };
+  if (countedOnly) filter.counted = true;
+  return filter;
+}
 
 function isDuplicateKeyError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === 11000;
@@ -110,32 +108,23 @@ function toParticipant(doc: any): MatchParticipantRecord {
     avatar: (doc.avatar ?? null) as AvatarId | null,
     finalScore: Number(doc.finalScore),
     finalRank: Number(doc.finalRank),
-    outcome: doc.outcome
-  };
-}
-
-function toRound(doc: any): MatchRoundRecord {
-  return {
-    roundNumber: Number(doc.roundNumber),
-    imposterSeat: doc.imposterSeat ?? null,
-    mainWord: String(doc.mainWord),
-    imposterWord: String(doc.imposterWord),
-    imposterCaught: Boolean(doc.imposterCaught),
-    imposterGuessCorrect: Boolean(doc.imposterGuessCorrect),
-    points: (doc.points ?? []).map((entry: any) => ({ seat: Number(entry.seat), points: Number(entry.points) }))
+    outcome: doc.outcome === "win" || doc.outcome === "draw" ? doc.outcome : "loss",
+    connectedAtEnd: Boolean(doc.connectedAtEnd)
   };
 }
 
 function toMatch(doc: any): MatchRecord {
   return {
     id: String(doc._id),
+    status: "completed",
     startedAt: new Date(doc.startedAt),
     endedAt: new Date(doc.endedAt),
+    durationSeconds: Number(doc.durationSeconds ?? 0),
     counted: Boolean(doc.counted),
     wordSource: doc.wordSource === "custom" ? "custom" : "curated",
     settings: { categories: [...(doc.settings?.categories ?? [])], difficulty: doc.settings?.difficulty, rounds: Number(doc.settings?.rounds) },
-    participants: (doc.participants ?? []).map(toParticipant),
-    rounds: (doc.rounds ?? []).map(toRound)
+    roundsPlayed: Number(doc.roundsPlayed ?? 0),
+    participants: (doc.participants ?? []).map(toParticipant)
   };
 }
 
@@ -203,13 +192,15 @@ export class MongoStore implements Store {
     try {
       await MatchModel.create({
         _id: match.id,
+        status: match.status,
         startedAt: match.startedAt,
         endedAt: match.endedAt,
+        durationSeconds: match.durationSeconds,
         counted: match.counted,
         wordSource: match.wordSource,
         settings: match.settings,
-        participants: match.participants,
-        rounds: match.rounds
+        roundsPlayed: match.roundsPlayed,
+        participants: match.participants
       });
       return "saved";
     } catch (error) {
@@ -218,13 +209,16 @@ export class MongoStore implements Store {
     }
   }
 
-  async listMatchesForUser(userId: string, options: { countedOnly?: boolean; limit?: number } = {}): Promise<MatchRecord[]> {
-    const filter: Record<string, unknown> = { "participants.userId": userId };
-    if (options.countedOnly) filter.counted = true;
-    let query = MatchModel.find(filter).sort({ endedAt: -1 });
+  async listMatchesForUser(userId: string, options: { countedOnly?: boolean; limit?: number; skip?: number } = {}): Promise<MatchRecord[]> {
+    let query = MatchModel.find(matchFilter(userId, options.countedOnly)).sort({ endedAt: -1, _id: -1 });
+    if (options.skip) query = query.skip(options.skip);
     if (options.limit !== undefined) query = query.limit(options.limit);
     const docs = await query.lean();
     return docs.map(toMatch);
+  }
+
+  async countMatchesForUser(userId: string, options: { countedOnly?: boolean } = {}): Promise<number> {
+    return MatchModel.countDocuments(matchFilter(userId, options.countedOnly));
   }
 
   async listCountedMatches(): Promise<MatchRecord[]> {

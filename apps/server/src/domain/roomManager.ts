@@ -23,7 +23,9 @@ import {
 import { fallbackWordBank, type WordPair } from "../data/wordBank.js";
 import { ChatModerationGate, createModerationEngine, defaultModerationPolicy, type ModerationEngine, type ModerationPolicy } from "../moderation/index.js";
 import { socketIdentity } from "../socket/identity.js";
+import type { MatchRecord } from "../store/index.js";
 import { RoomChat } from "./chat.js";
+import { buildMatchRecord } from "./matchRecord.js";
 import { validateClue } from "./clues.js";
 import { selectImposter } from "./imposter.js";
 import { calculateScores } from "./scoring.js";
@@ -83,7 +85,20 @@ type Room = {
   lastEntryAtByIp: Map<string, number>;
   chat: RoomChat;
   moderation: ChatModerationGate;
+  /** The game being played since the host pressed Start; null in the lobby and after it ends or is cancelled. */
+  game: ActiveGame | null;
 };
+
+type ActiveGame = {
+  /** Random id; the completed-match record is stored under it, so a game is saved at most once. */
+  id: string;
+  startedAt: number;
+  /** Players dealt in at the start. Players still in the lobby but disconnected at that moment are not. */
+  rosterIds: Set<string>;
+};
+
+/** Receives each completed game's record (see MatchRecorder). */
+export type MatchSink = { record: (match: MatchRecord) => Promise<unknown> };
 
 type Persistence = {
   enabled: boolean;
@@ -105,15 +120,17 @@ export class RoomManager {
 
   private readonly moderationEngine: ModerationEngine;
   private readonly moderationPolicy: ModerationPolicy;
+  private readonly matchSink: MatchSink | null;
 
   constructor(
     private readonly io: GameServer,
     private readonly persistence: Persistence,
     private readonly wordBank = fallbackWordBank,
-    options: { moderationPolicy?: ModerationPolicy } = {}
+    options: { moderationPolicy?: ModerationPolicy; matchSink?: MatchSink } = {}
   ) {
     this.moderationEngine = createModerationEngine({ bankWords: wordBank.flatMap((pair) => [pair.wordA, pair.wordB]) });
     this.moderationPolicy = options.moderationPolicy ?? defaultModerationPolicy;
+    this.matchSink = options.matchSink ?? null;
   }
 
   createRoom(socket: GameSocket, playerName: string, ip = "unknown"): CreateRoomAck {
@@ -137,7 +154,8 @@ export class RoomManager {
       createdAt: Date.now(),
       lastEntryAtByIp: new Map([[ip, Date.now()]]),
       chat: new RoomChat(code),
-      moderation: new ChatModerationGate(this.moderationEngine, this.moderationPolicy)
+      moderation: new ChatModerationGate(this.moderationEngine, this.moderationPolicy),
+      game: null
     };
     this.rooms.set(code, room);
     this.attachSocket(socket, room, player);
@@ -241,6 +259,7 @@ export class RoomManager {
     if (matchingWordPairs(this.wordBank, room.settings).length === 0) {
       return { ok: false, message: "No word pairs match this category and difficulty. Choose a different combination." };
     }
+    room.game = { id: randomUUID(), startedAt: Date.now(), rosterIds: new Set(connected.map((candidate) => candidate.id)) };
     this.beginRound(room);
     return { ok: true };
   }
@@ -350,6 +369,7 @@ export class RoomManager {
     room.imposterCounts = {};
     room.deadline = null;
     room.cancelledReason = null;
+    room.game = null;
     for (const player of room.players.values()) {
       player.score = 0;
       player.ready = player.host;
@@ -558,9 +578,49 @@ export class RoomManager {
     this.persistence.saveCompletedGame(this.publicState(room)).catch((error: unknown) => {
       console.error("[persistence] Failed to save the completed game:", error);
     });
+    this.recordCompletedGame(room);
+  }
+
+  /**
+   * Hands the finished game's result to the match recorder. The record is a snapshot taken
+   * now, so players leaving the results screen or a quick rematch cannot change it, and
+   * clearing room.game first means this game can never be recorded twice.
+   */
+  private recordCompletedGame(room: Room): void {
+    const game = room.game;
+    room.game = null;
+    if (!game || !this.matchSink) return;
+    const sink = this.matchSink;
+    try {
+      const decision = buildMatchRecord({
+        gameId: game.id,
+        startedAt: game.startedAt,
+        endedAt: Date.now(),
+        settings: room.settings,
+        roundsPlayed: room.roundHistory.length,
+        rosterIds: game.rosterIds,
+        seats: [...room.players.values()].map((player) => ({
+          playerId: player.id,
+          name: player.name,
+          userId: player.userId,
+          avatar: player.profile?.avatar ?? null,
+          score: player.score,
+          connected: player.connected
+        }))
+      });
+      if (!decision.record) return;
+      sink.record(decision.record).catch((error: unknown) => {
+        console.error("[matches] Unexpected error while recording a completed game:", error);
+      });
+    } catch (error) {
+      // Recording is secondary: the game has already ended correctly for every player.
+      console.error("[matches] Could not build the completed-game record:", error);
+    }
   }
 
   private cancelRoom(room: Room, reason: string): void {
+    // A cancelled game is never recorded: it has no result.
+    room.game = null;
     room.phase = "CANCELLED";
     room.cancelledReason = reason;
     this.clearTimer(room);

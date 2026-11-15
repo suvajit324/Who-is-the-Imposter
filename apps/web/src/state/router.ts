@@ -5,9 +5,10 @@ import { useSyncExternalStore } from "react";
  * rewrite unknown paths to index.html.
  *   #/                    dashboard
  *   #/login, #/register   sign in / create account
- *   #/profile             your own profile
+ *   #/profile             your own profile and statistics
+ *   #/history             your own match history (signed in)
  *   #/players/<username>  someone's public profile
- *   #/leaderboard         all-time points leaderboard
+ *   #/leaderboard         all-time leaderboard
  */
 
 export type Route =
@@ -15,6 +16,7 @@ export type Route =
   | { name: "login" }
   | { name: "register" }
   | { name: "profile" }
+  | { name: "history" }
   | { name: "player"; username: string }
   | { name: "leaderboard" };
 
@@ -23,6 +25,7 @@ export function parseRoute(hash: string): Route {
   if (path === "/login") return { name: "login" };
   if (path === "/register") return { name: "register" };
   if (path === "/profile") return { name: "profile" };
+  if (path === "/history") return { name: "history" };
   if (path === "/leaderboard") return { name: "leaderboard" };
   const player = path.match(/^\/players\/([A-Za-z0-9_]{1,20})$/);
   if (player) return { name: "player", username: player[1] };

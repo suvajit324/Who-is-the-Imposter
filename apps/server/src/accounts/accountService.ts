@@ -1,18 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  accountSchema,
-  authResponseSchema,
-  leaderboardResponseSchema,
-  profileResponseSchema,
-  type Account,
-  type AuthResponse,
-  type AvatarId,
-  type LeaderboardResponse,
-  type LoginRequest,
-  type ProfileResponse,
-  type RegisterRequest
-} from "@imposter/shared";
-import { computeLeaderboard, computeStats, toRecentMatch } from "../stats/stats.js";
+import { accountSchema, authResponseSchema, type Account, type AuthResponse, type AvatarId, type LoginRequest, type RegisterRequest } from "@imposter/shared";
 import type { Store, UserRecord } from "../store/index.js";
 import { dummyPasswordHash, hashPassword, verifyPassword } from "./passwords.js";
 import { FixedWindowLimiter } from "./rateLimiter.js";
@@ -20,7 +7,6 @@ import { hashSessionToken, looksLikeSessionToken, newSessionToken } from "./toke
 import { usernameKey, usernameProblem } from "./usernames.js";
 
 export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
-export const RECENT_MATCHES_LIMIT = 10;
 
 /** The signed-in identity attached to an HTTP request or a socket. Server-side only. */
 export type AuthenticatedUser = {
@@ -134,24 +120,6 @@ export class AccountService {
   async updateAvatar(userId: string, avatar: AvatarId): Promise<Account | null> {
     await this.store.updateUserAvatar(userId, avatar);
     return this.account(userId);
-  }
-
-  async profile(username: string): Promise<ProfileResponse | null> {
-    const user = await this.store.findUserByUsernameKey(usernameKey(username));
-    if (!user) return null;
-    const matches = await this.store.listMatchesForUser(user.id);
-    return profileResponseSchema.parse({
-      profile: toAccount(user),
-      stats: computeStats(user.id, matches),
-      recentMatches: matches.slice(0, RECENT_MATCHES_LIMIT).flatMap((match) => toRecentMatch(user.id, match) ?? [])
-    });
-  }
-
-  async leaderboard(): Promise<LeaderboardResponse> {
-    const matches = await this.store.listCountedMatches();
-    const userIds = [...new Set(matches.flatMap((match) => match.participants.flatMap((participant) => participant.userId ?? [])))];
-    const users = new Map((await this.store.findUsersByIds(userIds)).map((user) => [user.id, { username: user.username, avatar: user.avatar }]));
-    return leaderboardResponseSchema.parse({ entries: computeLeaderboard(matches, users), generatedAt: new Date(this.now()).toISOString() });
   }
 
   private async startSession(user: UserRecord): Promise<AuthResponse> {

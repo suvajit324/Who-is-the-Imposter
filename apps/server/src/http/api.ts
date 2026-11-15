@@ -8,6 +8,7 @@ import {
   type ApiError
 } from "@imposter/shared";
 import type { AccountService, AuthenticatedUser } from "../accounts/accountService.js";
+import type { StatsService } from "../stats/statsService.js";
 
 /*
  * JSON API for accounts, profiles and the leaderboard, mounted at /api.
@@ -36,11 +37,20 @@ const bearerToken = (req: Request): string | null => {
 
 export type ApiOptions = {
   accounts: AccountService;
+  stats: StatsService;
   /** Called after a session is revoked so open sockets that used it can be closed. */
   onSessionRevoked?: (sessionHash: string) => Promise<void> | void;
 };
 
-export function createApiRouter({ accounts, onSessionRevoked }: ApiOptions): Router {
+/** `?page=` for paged lists: absent means 1; anything but a whole number from 1 to 1000 is refused. */
+function parsePage(value: unknown): number | null {
+  if (value === undefined) return 1;
+  if (typeof value !== "string" || !/^\d{1,4}$/.test(value)) return null;
+  const page = Number(value);
+  return page >= 1 && page <= 1000 ? page : null;
+}
+
+export function createApiRouter({ accounts, stats, onSessionRevoked }: ApiOptions): Router {
   const router = express.Router();
 
   router.use((_req, res, next) => {
@@ -117,11 +127,23 @@ export function createApiRouter({ accounts, onSessionRevoked }: ApiOptions): Rou
     })
   );
 
+  // Only the signed-in player's own matches: the account comes from the token, never from the request.
+  router.get(
+    "/me/matches",
+    route(async (req, res) => {
+      const user = await requireUser(req, res);
+      if (!user) return;
+      const page = parsePage(req.query.page);
+      if (page === null) return sendError(res, 400, "Invalid page number.");
+      res.json(await stats.history(user.userId, page));
+    })
+  );
+
   router.get(
     "/players/:username",
     route(async (req, res) => {
       const username = usernameSchema.safeParse(req.params.username);
-      const profile = username.success ? await accounts.profile(username.data) : null;
+      const profile = username.success ? await stats.profile(username.data) : null;
       if (!profile) return sendError(res, 404, "No player with that username.");
       res.json(profile);
     })
@@ -130,7 +152,7 @@ export function createApiRouter({ accounts, onSessionRevoked }: ApiOptions): Rou
   router.get(
     "/leaderboard",
     route(async (_req, res) => {
-      res.json(await accounts.leaderboard());
+      res.json(await stats.leaderboard());
     })
   );
 

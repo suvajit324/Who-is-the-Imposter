@@ -8,6 +8,7 @@ describe("hash routes", () => {
     ["#/login", { name: "login" }],
     ["#/register/", { name: "register" }],
     ["#/profile", { name: "profile" }],
+    ["#/history", { name: "history" }],
     ["#/leaderboard", { name: "leaderboard" }],
     ["#/players/Nova_7", { name: "player", username: "Nova_7" }],
     ["#/players/<script>", { name: "home" }],

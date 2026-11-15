@@ -12,11 +12,14 @@ const user = (id: string, username: string): UserRecord => ({
 
 const match = (id: string, endedAt: string, userIds: Array<string | null>, counted = true): MatchRecord => ({
   id,
+  status: "completed",
   startedAt: new Date("2026-01-01T00:00:00Z"),
   endedAt: new Date(endedAt),
+  durationSeconds: 60,
   counted,
   wordSource: counted ? "curated" : "custom",
   settings: { categories: ["Food"], difficulty: "Any", rounds: 1 },
+  roundsPlayed: 1,
   participants: userIds.map((userId, index) => ({
     seat: index + 1,
     userId,
@@ -24,9 +27,9 @@ const match = (id: string, endedAt: string, userIds: Array<string | null>, count
     avatar: null,
     finalScore: 0,
     finalRank: 1,
-    outcome: "draw"
-  })),
-  rounds: []
+    outcome: "draw",
+    connectedAtEnd: true
+  }))
 });
 
 describe("MemoryStore (demo storage) contract", () => {
@@ -94,7 +97,20 @@ describe("MemoryStore (demo storage) contract", () => {
     expect((await store.listMatchesForUser("u1")).map((row) => row.id)).toEqual(["g2", "g3", "g1"]);
     expect((await store.listMatchesForUser("u1", { countedOnly: true })).map((row) => row.id)).toEqual(["g3", "g1"]);
     expect((await store.listMatchesForUser("u1", { limit: 1 })).map((row) => row.id)).toEqual(["g2"]);
+    expect((await store.listMatchesForUser("u1", { skip: 1, limit: 1 })).map((row) => row.id)).toEqual(["g3"]);
+    expect((await store.listMatchesForUser("u1", { skip: 3 })).map((row) => row.id)).toEqual([]);
+    expect(await store.countMatchesForUser("u1")).toBe(3);
+    expect(await store.countMatchesForUser("u1", { countedOnly: true })).toBe(2);
+    expect(await store.countMatchesForUser("nobody")).toBe(0);
     expect((await store.listCountedMatches()).map((row) => row.id).sort()).toEqual(["g1", "g3", "g4"]);
+  });
+
+  it("pages matches that ended at the same moment in a stable order", async () => {
+    const store = new MemoryStore();
+    for (const id of ["a", "c", "b"]) await store.saveMatch(match(id, "2026-01-01T10:00:00Z", ["u1", null, null]));
+    const first = await store.listMatchesForUser("u1", { limit: 2 });
+    const second = await store.listMatchesForUser("u1", { skip: 2, limit: 2 });
+    expect([...first, ...second].map((row) => row.id)).toEqual(["c", "b", "a"]);
   });
 
   it("returns copies of matches", async () => {

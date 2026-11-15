@@ -1038,3 +1038,285 @@ a.btn:focus-visible,
     padding: 16px 0;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Statistics, match history and leaderboard                           */
+/* ------------------------------------------------------------------ */
+
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: clamp(1.8rem, 5vw, 2.6rem);
+}
+
+.page-head .eyebrow {
+  margin: 0 0 4px;
+}
+
+.fine-print {
+  margin: 14px 0 0;
+  font-size: 0.85rem;
+}
+
+.empty-note {
+  margin: 8px 0 0;
+}
+
+.text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #8fe3ff;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.text-link:hover {
+  text-decoration: underline;
+}
+
+.stats-panel h2,
+.history-teaser h2,
+.empty-state h2 {
+  margin: 0;
+}
+
+.stat-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin: 16px 0 0;
+}
+
+.stat-tile {
+  padding: 14px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.stat-tile dt {
+  color: #9daac0;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.stat-tile dd {
+  margin: 6px 0 0;
+  font-size: 1.6rem;
+  font-weight: 950;
+}
+
+.history-teaser {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.history-teaser p {
+  margin: 6px 0 0;
+}
+
+.empty-state {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.empty-state p {
+  margin: 0;
+}
+
+/* Match history */
+.history-list {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-card {
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: rgba(13, 18, 32, 0.82);
+}
+
+.history-card.outcome-win { border-left-color: #2bd4bd; }
+.history-card.outcome-draw { border-left-color: #ffd166; }
+.history-card.outcome-loss { border-left-color: #ff7070; }
+
+.history-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.history-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.history-meta .muted {
+  font-size: 0.86rem;
+}
+
+.outcome-pill {
+  flex: none;
+  min-width: 62px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 0.82rem;
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.outcome-pill.outcome-win { background: #0f7f61; }
+.outcome-pill.outcome-draw { background: #8a6a12; }
+.outcome-pill.outcome-loss { background: #7a2333; }
+
+.history-players {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.history-player.you {
+  background: rgba(43, 212, 189, 0.12);
+  outline: 1px solid rgba(43, 212, 189, 0.4);
+}
+
+.history-player a {
+  color: #8fe3ff;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.history-player .verified {
+  margin-left: 0;
+}
+
+.history-rank {
+  color: #9daac0;
+  font-weight: 900;
+  font-size: 0.85rem;
+}
+
+.history-score {
+  margin-left: auto;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+/* Leaderboard */
+.table-scroll {
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+.leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.leaderboard-table th,
+.leaderboard-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.leaderboard-table th {
+  color: #9daac0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.leaderboard-table th:nth-child(-n + 2),
+.leaderboard-table td:nth-child(-n + 2) {
+  text-align: left;
+}
+
+.leaderboard-table tbody tr.is-me {
+  background: rgba(43, 212, 189, 0.12);
+}
+
+.rank-cell {
+  font-weight: 950;
+}
+
+.player-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: white;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.player-link:hover span {
+  text-decoration: underline;
+}
+
+.player-link:focus-visible {
+  outline: 3px solid rgba(87, 212, 255, 0.9);
+  outline-offset: 3px;
+}
+
+@media (max-width: 560px) {
+  .page-head,
+  .history-teaser {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .history-head {
+    align-items: flex-start;
+  }
+
+  .history-players {
+    grid-template-columns: 1fr;
+  }
+
+  .optional-col {
+    display: none;
+  }
+
+  .leaderboard-table th,
+  .leaderboard-table td {
+    padding: 10px 6px;
+  }
+}

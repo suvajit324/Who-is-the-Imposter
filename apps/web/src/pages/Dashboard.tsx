@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BadgeCheck, LogIn, Play, UserPlus, Users } from "lucide-react";
+import { BadgeCheck, History, LogIn, Play, Trophy, UserPlus, Users } from "lucide-react";
 import type { CreateRoomAck } from "@imposter/shared";
 import { Avatar } from "../components/Avatar.js";
 import { Button, Input, Panel } from "../components/ui.js";
@@ -81,18 +81,22 @@ export function Dashboard({ onEnter, setError }: { onEnter: (response: EnterRoom
                   <h2>{session.account.username}</h2>
                 </div>
               </div>
-              <p className="muted">Your games are recorded when they finish, and your username shows a verified badge in rooms.</p>
-              <a className="btn btn-secondary" href={hrefFor({ name: "profile" })}>View profile</a>
+              <p className="muted">Games you finish while signed in count towards your statistics and the leaderboard.</p>
+              <div className="button-row">
+                <a className="btn btn-secondary" href={hrefFor({ name: "profile" })}>View profile</a>
+                <a className="btn btn-secondary" href={hrefFor({ name: "history" })}><History size={18} />Match history</a>
+              </div>
             </>
           ) : (
             <>
               <p className="eyebrow">Guest mode</p>
               <h2>Want a profile?</h2>
-              <p className="muted">Guests can play everything. An account reserves your username, shows a verified badge in rooms and keeps a profile.</p>
+              <p className="muted">Guests can play everything. An account reserves your username, shows a verified badge in rooms, and records your games for statistics and the leaderboard.</p>
               <div className="button-row">
                 <a className="btn" href={hrefFor({ name: "register" })}><UserPlus size={18} />Create account</a>
                 <a className="btn btn-secondary" href={hrefFor({ name: "login" })}><LogIn size={18} />Sign in</a>
               </div>
+              <a className="text-link" href={hrefFor({ name: "leaderboard" })}><Trophy size={16} />See the leaderboard</a>
             </>
           )}
         </Panel>
