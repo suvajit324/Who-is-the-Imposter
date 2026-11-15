@@ -14,6 +14,7 @@ import {
   Vote
 } from "lucide-react";
 import {
+  categorySchema,
   defaultSettings,
   type BasicAck,
   type GameSettings,
@@ -31,7 +32,7 @@ type Credentials = { roomCode: string; playerId: string; reconnectToken: string 
 type EnterRoomResponse = { ok: true; roomCode: string; playerId: string; reconnectToken: string; state: PublicRoomState };
 
 const credentialKey = "imposter.credentials";
-const categories: WordCategory[] = ["Food", "Animals", "Sports", "Movies", "Places", "Objects", "Technology", "Professions", "College"];
+const categories: WordCategory[] = [...categorySchema.options];
 
 export function App() {
   const [state, setState] = useState<PublicRoomState | null>(null);

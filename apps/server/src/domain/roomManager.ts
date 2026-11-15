@@ -26,7 +26,7 @@ import { validateClue } from "./clues.js";
 import { selectImposter } from "./imposter.js";
 import { calculateScores } from "./scoring.js";
 import { resolveVotes, validateVote } from "./voting.js";
-import { matchingWordPairs, selectWordPair } from "./words.js";
+import { assignPairWords, matchingWordPairs, selectWordPair } from "./words.js";
 
 type GameSocket = Socket<ClientToServerEvents, ServerToClientEvents>;
 type GameServer = Server<ClientToServerEvents, ServerToClientEvents>;
@@ -64,6 +64,7 @@ type Room = {
   players: Map<string, Player>;
   settings: GameSettings;
   roundNumber: number;
+  /** Word pairs dealt in this room, least recently used first. Kept across rematches. */
   usedWordPairIds: Set<string>;
   imposterCounts: Record<string, number>;
   round: RoundState | null;
@@ -329,7 +330,7 @@ export class RoomManager {
     room.roundNumber = 0;
     room.round = null;
     room.roundHistory = [];
-    room.usedWordPairIds.clear();
+    // usedWordPairIds is deliberately kept: the same group should not be dealt the pairs it just played.
     room.imposterCounts = {};
     room.deadline = null;
     room.cancelledReason = null;
@@ -410,14 +411,16 @@ export class RoomManager {
     room.roundNumber += 1;
     const imposterId = selectImposter(players.map((player) => player.id), room.imposterCounts);
     room.imposterCounts[imposterId] = (room.imposterCounts[imposterId] ?? 0) + 1;
+    // Re-insert so the Set stays ordered least -> most recently used (selectWordPair relies on it).
+    room.usedWordPairIds.delete(pair.id);
     room.usedWordPairIds.add(pair.id);
-    const flip = Math.random() >= 0.5;
+    const { normalWord, imposterWord } = assignPairWords(pair);
     room.round = {
       number: room.roundNumber,
       imposterId,
       pair,
-      normalWord: flip ? pair.wordA : pair.wordB,
-      imposterWord: flip ? pair.wordB : pair.wordA,
+      normalWord,
+      imposterWord,
       clues: new Map(),
       votes: new Map(),
       runoffVotes: new Map(),
