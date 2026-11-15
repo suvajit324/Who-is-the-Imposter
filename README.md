@@ -345,6 +345,7 @@ On Render's free plan the service sleeps when idle, so the first request after a
 | --- | --- |
 | Web app shows "Reconnecting" forever | `VITE_PUBLIC_SOCKET_URL` must match the backend URL; the backend may be waking up on Render |
 | CORS errors in the browser console | `CLIENT_ORIGIN` must be the exact frontend origin: no path, no trailing slash |
+| Shows "Connected" but sign-in says "Could not reach the game server" | The socket is up but HTTP requests are blocked by CORS (WebSockets are not subject to CORS). Check the `access-control-allow-origin` header on `/health`: it must equal the frontend origin, e.g. `https://<user>.github.io`. A path or trailing slash in `CLIENT_ORIGIN` is now ignored, with a warning in the server log |
 | Server exits at startup with a MongoDB error | Atlas IP access list, database user and password (URL-encoded), and cluster host. Leave `MONGODB_URI` empty to use demo mode instead |
 | "Demo storage" banner | The server has no `MONGODB_URI`; accounts and records reset on restart |
 | "Accounts are temporarily unavailable" | The server lost its MongoDB connection; guest play still works |

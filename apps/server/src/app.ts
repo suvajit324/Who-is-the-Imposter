@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import type { ClientToServerEvents, PublicRoomState, ServerToClientEvents } from "@imposter/shared";
 import { AccountService, type AccountServiceOptions } from "./accounts/accountService.js";
+import { toOrigin } from "./clientOrigin.js";
 import { fallbackWordBank, type WordPair } from "./data/wordBank.js";
 import { RoomManager } from "./domain/roomManager.js";
 import { createApiRouter, jsonErrorHandler } from "./http/api.js";
@@ -15,7 +16,7 @@ import { StatsService } from "./stats/statsService.js";
 import type { Store } from "./store/index.js";
 
 export type GameServerOptions = {
-  /** Exact origin of the web client (CORS for HTTP and Socket.IO). */
+  /** Origin of the web client (CORS for HTTP and Socket.IO). A path or trailing slash is ignored. */
   clientOrigin: string;
   persistence: { enabled: boolean; saveCompletedGame: (state: PublicRoomState) => Promise<void> };
   store: Store;
@@ -32,6 +33,7 @@ export type GameServerOptions = {
  * listening, so index.ts and the tests share exactly the same wiring.
  */
 export function createGameServer(options: GameServerOptions) {
+  const clientOrigin = toOrigin(options.clientOrigin);
   const app = express();
   app.disable("x-powered-by");
   app.use((_req, res, next) => {
@@ -39,7 +41,7 @@ export function createGameServer(options: GameServerOptions) {
     res.set("X-Content-Type-Options", "nosniff");
     next();
   });
-  app.use(cors({ origin: options.clientOrigin }));
+  app.use(cors({ origin: clientOrigin }));
   app.use(express.json({ limit: "10kb" }));
 
   app.get("/health", (_req, res) => {
@@ -54,7 +56,7 @@ export function createGameServer(options: GameServerOptions) {
   const httpServer = createServer(app);
   const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
     cors: {
-      origin: options.clientOrigin,
+      origin: clientOrigin,
       methods: ["GET", "POST"]
     }
   });
