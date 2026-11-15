@@ -13,6 +13,7 @@
     "test": "npm run test -w @imposter/server && npm run test -w @imposter/web",
     "typecheck": "npm run build -w @imposter/shared && npm run typecheck -w @imposter/server && npm run typecheck -w @imposter/web",
     "seed": "npm run seed -w @imposter/server",
+    "words:review": "npm run words:review -w @imposter/server",
     "lint": "npm run lint -ws --if-present"
   },
   "devDependencies": {

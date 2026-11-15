@@ -26,7 +26,13 @@ export const categorySchema = z.enum([
   "Objects",
   "Technology",
   "Professions",
-  "College"
+  "College",
+  "Nature",
+  "Transport",
+  "Science",
+  "Activities",
+  /** Cross-category pairs whose words share one trait (e.g. Zebra / Piano: black and white). */
+  "Mixed"
 ]);
 export type WordCategory = z.infer<typeof categorySchema>;
 
@@ -50,17 +56,7 @@ export const defaultSettings: GameSettings = {
   discussionSeconds: 30,
   votingSeconds: 30,
   discussionEnabled: true,
-  categories: [
-    "Food",
-    "Animals",
-    "Sports",
-    "Movies",
-    "Places",
-    "Objects",
-    "Technology",
-    "Professions",
-    "College"
-  ],
+  categories: [...categorySchema.options],
   difficulty: "Any"
 };
 

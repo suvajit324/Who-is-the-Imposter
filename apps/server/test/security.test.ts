@@ -286,20 +286,8 @@ describe("server robustness against tampered clients", () => {
     expect((await probe.emitWithAck("room:create", { playerName: "Still alive" })).ok).toBe(true);
   });
 
-  it("rejects category/difficulty combinations with no word pairs instead of crashing", async () => {
-    const { players } = await createRoomWith(["Asha", "Bala", "Chirag"]);
-    const [host, ...guests] = players;
-    for (const guest of guests) await guest.client.emitWithAck("player:ready", { ready: true });
-    expect(await host.client.emitWithAck("settings:update", { categories: ["Food"], difficulty: "Hard" })).toEqual({ ok: true });
-    expect(await host.client.emitWithAck("game:start", {})).toEqual({
-      ok: false,
-      message: "No word pairs match this category and difficulty. Choose a different combination."
-    });
-    await pause(20);
-    expect(host.lastState).toMatchObject({ phase: "LOBBY", roundNumber: 0 });
-    expect(await host.client.emitWithAck("settings:update", { difficulty: "Easy" })).toEqual({ ok: true });
-    expect(await host.client.emitWithAck("game:start", {})).toEqual({ ok: true });
-  });
+  // "rejects category/difficulty combinations with no word pairs" now lives in wordSelectionSocket.test.ts:
+  // the curated bank covers every category and difficulty, so it needs an injected sparse bank.
 
   it("does not let the host wipe a game in progress with a forged rematch", async () => {
     const { players } = await createRoomWith(["Asha", "Bala", "Chirag"]);

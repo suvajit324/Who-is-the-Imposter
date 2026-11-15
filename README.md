@@ -11,7 +11,7 @@ A real-time private-room social deduction game built with React, Vite, TypeScrip
 - Private Socket.IO role messages so players receive only their own word and role.
 - One-word clue validation, duplicate clue rejection, deadline handling, anonymous voting, no self-votes, deterministic runoff tie rules, and abstentions.
 - Backend-only scoring with cumulative leaderboard, shared final ranks, rematch support, and optional Imposter word guess bonus.
-- Curated fallback word bank with 60+ related word pairs across the requested categories.
+- Curated, human-reviewed word bank: 147 pairs across 14 categories and three difficulty levels, checked by a word-pair review tool.
 - Optional MongoDB seed script and completed-game persistence.
 - Unit tests for domain rules and integration tests for critical Socket.IO behavior.
 
@@ -74,7 +74,21 @@ With `MONGODB_URI` configured:
 npm run seed
 ```
 
-Without MongoDB, the seed command prints the fallback word-bank count and exits successfully.
+Without MongoDB, the seed command prints the fallback word-bank count and exits successfully. The seed refuses to run if the word-pair review fails, and removes retired pairs from the collection.
+
+## Word Pairs
+
+Word pairs live in `apps/server/src/data/wordBank.ts`. Each round the server picks a pair that matches the room's categories and difficulty, randomly decides which word is the main word, and sends each player only their own word. Pairs are not repeated in a room while unused matching pairs remain (including across rematches).
+
+A good pair names two clearly different things that share at least one trait, so careful clues can expose the Imposter but one clue does not settle the round. Synonyms and variants (Mountain / Hill, Sofa / Couch) are rejected. Difficulty reflects how much the words' natural clues overlap: Easy pairs are obviously different, Hard pairs are close neighbours that need careful clues. The "Mixed" category holds pairs from different domains that share one trait, such as Zebra / Piano.
+
+Review the bank after any change:
+
+```bash
+npm run words:review
+```
+
+It reports malformed entries, duplicates (including reversed ones), identical words, missing or invalid categories, difficulties and tags, previously rejected pairs, conflicts with chat moderation, and possible near-synonyms or look-alike words. Possible near-synonyms are flagged for a human decision rather than rejected automatically; accept a flagged pair by recording the reason in `acknowledgedWarnings` in `apps/server/src/data/wordPairReview.ts`. The test suite runs the same review.
 
 ## Checks
 
@@ -82,6 +96,7 @@ Without MongoDB, the seed command prints the fallback word-bank count and exits 
 npm run typecheck
 npm test
 npm run build
+npm run words:review
 ```
 
 ## Gameplay Notes
