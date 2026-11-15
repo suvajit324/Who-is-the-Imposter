@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createGameServer } from "./app.js";
+import { toOrigin } from "./clientOrigin.js";
 import { createPersistence } from "./persistence/index.js";
 import { createStore } from "./store/index.js";
 
@@ -11,6 +12,11 @@ process.on("unhandledRejection", (reason) => {
 
 const port = Number(process.env.PORT ?? 4000);
 const clientOrigin = process.env.CLIENT_ORIGIN ?? "http://localhost:5173";
+if (toOrigin(clientOrigin) !== clientOrigin) {
+  console.warn(
+    `[server] CLIENT_ORIGIN "${clientOrigin}" is not a bare origin; allowing ${toOrigin(clientOrigin)}. Set it to scheme and host only, with no path or trailing slash.`
+  );
+}
 const persistence = createPersistence(process.env.MONGODB_URI);
 await persistence.connect();
 const store = createStore(persistence.enabled);
