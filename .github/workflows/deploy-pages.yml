@@ -3,22 +3,19 @@ name: Deploy frontend to GitHub Pages
 on:
   push:
     branches: ["main"]
+  # Pull requests into main run the checks and the build only; they never deploy.
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,10 +40,62 @@ jobs:
         env:
           VITE_PUBLIC_SOCKET_URL: ${{ vars.VITE_PUBLIC_SOCKET_URL }}
 
+      # Uploaded once per run. Deploying happens in a separate job, so re-running only the
+      # failed deploy job reuses this artifact instead of uploading a second "github-pages"
+      # artifact (deploy-pages refuses to deploy when a run has more than one).
       - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: apps/web/dist
 
-      - name: Deploy to GitHub Pages
+  deploy:
+    needs: build
+    # Only main is deployed (the github-pages environment also only allows main).
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy1.outputs.page_url || steps.deploy2.outputs.page_url || steps.deploy3.outputs.page_url }}
+    # One deployment at a time; a deployment in progress is never cancelled.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      # The Pages API occasionally answers "Creating Pages deployment" with a transient
+      # HTTP 5xx. Retry the same artifact at most three times, with a growing pause.
+      # Each attempt only runs if every earlier attempt failed.
+      - name: Deploy to GitHub Pages (attempt 1 of 3)
+        id: deploy1
+        continue-on-error: true
         uses: actions/deploy-pages@v4
+
+      - name: Wait 30 seconds before retrying
+        if: steps.deploy1.outcome == 'failure'
+        run: sleep 30
+
+      - name: Deploy to GitHub Pages (attempt 2 of 3)
+        id: deploy2
+        if: steps.deploy1.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+
+      - name: Wait 90 seconds before the final attempt
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        run: sleep 90
+
+      # No continue-on-error: if this last attempt fails, the job fails.
+      - name: Deploy to GitHub Pages (attempt 3 of 3)
+        id: deploy3
+        if: steps.deploy1.outcome == 'failure' && steps.deploy2.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+
+      - name: Report failed deployment
+        if: failure()
+        run: |
+          echo "::error title=GitHub Pages deployment failed::All three deployment attempts failed for ${GITHUB_SHA}. The site was not updated. Re-run only the failed deploy job (Re-run failed jobs) once GitHub Pages is healthy; re-running all jobs would upload a second artifact."
+          exit 1
