@@ -1,4 +1,7 @@
 import { z } from "zod";
+import type { PlayerProfileRef } from "./accounts.js";
+
+export * from "./accounts.js";
 
 export const ROOM_CODE_LENGTH = 6;
 export const MIN_PLAYERS = 3;
@@ -70,6 +73,8 @@ export type PublicPlayer = {
   score: number;
   submittedClue: boolean;
   submittedVote: boolean;
+  /** Set for players signed in to an account (their name is then their username); null for guests. */
+  profile: PlayerProfileRef | null;
 };
 
 export type PublicClue = {

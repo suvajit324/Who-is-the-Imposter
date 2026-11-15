@@ -1,35 +1,42 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  BadgeCheck,
   Check,
   Clipboard,
   Crown,
   Eye,
+  LogIn,
   LogOut,
   Play,
   RefreshCw,
   Send,
-  Shield,
   Timer,
   UserRoundX,
   Vote
 } from "lucide-react";
 import {
   categorySchema,
-  defaultSettings,
   type BasicAck,
   type GameSettings,
   type PrivateRole,
   type PublicPlayer,
   type PublicRoomState,
   type RoundResult,
+  type StorageMode,
   type WordCategory
 } from "@imposter/shared";
-import { socket } from "./state/socket.js";
+import { ACCOUNTS_UNAVAILABLE, SESSION_INVALID, socket } from "./state/socket.js";
+import { api, ApiError } from "./state/api.js";
+import { hrefFor, inviteLinkFor, useRoute, type Route } from "./state/router.js";
+import { clearSession, getSession, updateSessionAccount, useSession } from "./state/session.js";
 import { Badge, Button, IconButton, Input, Panel } from "./components/ui.js";
+import { Avatar } from "./components/Avatar.js";
 import { ChatBox } from "./components/chat/ChatBox.js";
+import { Dashboard, type EnterRoomResponse } from "./pages/Dashboard.js";
+import { AuthPage } from "./pages/AuthPage.js";
+import { PlayerPage, ProfilePage } from "./pages/ProfilePage.js";
 
 type Credentials = { roomCode: string; playerId: string; reconnectToken: string };
-type EnterRoomResponse = { ok: true; roomCode: string; playerId: string; reconnectToken: string; state: PublicRoomState };
 
 const credentialKey = "imposter.credentials";
 const categories: WordCategory[] = [...categorySchema.options];
@@ -40,6 +47,10 @@ export function App() {
   const [credentials, setCredentials] = useState<Credentials | null>(() => readCredentials());
   const [connected, setConnected] = useState(socket.connected);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [storageMode, setStorageMode] = useState<StorageMode | null>(null);
+  const account = useSession()?.account ?? null;
+  const route = useRoute();
   // Bumped whenever the server (re)binds this socket to a player, so the chat re-syncs its history.
   const [session, setSession] = useState(0);
   const me = state?.players.find((player) => player.id === credentials?.playerId) ?? null;
@@ -61,13 +72,29 @@ export function App() {
         });
       }
     };
-    const onDisconnect = () => setConnected(false);
+    const onDisconnect = (reason: string) => {
+      setConnected(false);
+      // The server closes a socket whose session was signed out elsewhere; reconnect (as a guest if needed).
+      if (reason === "io server disconnect") socket.connect();
+    };
+    const onConnectError = (connectError: Error) => {
+      // The server refused this tab's session token: drop it and carry on as a guest.
+      if (connectError.message !== SESSION_INVALID && connectError.message !== ACCOUNTS_UNAVAILABLE) return;
+      clearSession();
+      setNotice(
+        connectError.message === SESSION_INVALID
+          ? "Your sign-in has expired, so you are playing as a guest. Sign in again any time."
+          : "Accounts are unavailable right now, so you are playing as a guest."
+      );
+      socket.connect();
+    };
     const onState = (next: PublicRoomState) => setState(next);
     const onSecret = (next: PrivateRole) => setSecret(next);
     const onResult = (result: RoundResult) => setState((current) => (current ? { ...current, latestResult: result } : current));
     const onError = (message: string) => setError(message);
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
+    socket.on("connect_error", onConnectError);
     socket.on("room:state", onState);
     socket.on("player:secret", onSecret);
     socket.on("round:result", onResult);
@@ -75,10 +102,31 @@ export function App() {
     return () => {
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
+      socket.off("connect_error", onConnectError);
       socket.off("room:state", onState);
       socket.off("player:secret", onSecret);
       socket.off("round:result", onResult);
       socket.off("room:error", onError);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    api.storageMode().then((mode) => active && setStorageMode(mode));
+    // Confirm a stored session is still valid and pick up profile changes made in another tab.
+    if (getSession()) {
+      api
+        .me()
+        .then((next) => active && updateSessionAccount(next))
+        .catch((caught) => {
+          if (active && caught instanceof ApiError && caught.status === 401) {
+            clearSession();
+            setNotice("Your sign-in has expired. Sign in again to use your account.");
+          }
+        });
+    }
+    return () => {
+      active = false;
     };
   }, []);
 
@@ -102,17 +150,46 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand">
+        <a className="brand" href={state ? undefined : hrefFor({ name: "home" })}>
           <span className="logo-mark">?</span>
           <span>Who's the Imposter?</span>
-        </div>
-        <Badge tone={connected ? "green" : "amber"}>{connected ? "Connected" : "Reconnecting"}</Badge>
+        </a>
+        <nav className="topnav" aria-label="Main">
+          {/* Signing in or out is only possible outside a room, so the account links are hidden during a game. */}
+          {!state && (
+            <>
+              <NavLink route={{ name: "home" }} current={route}>Play</NavLink>
+              {account ? (
+                <a className={route.name === "profile" ? "nav-account active" : "nav-account"} href={hrefFor({ name: "profile" })}>
+                  <Avatar avatar={account.avatar} size="sm" />
+                  <span>{account.username}</span>
+                </a>
+              ) : (
+                <a className="btn btn-small" href={hrefFor({ name: "login" })}><LogIn size={16} />Sign in</a>
+              )}
+            </>
+          )}
+          <Badge tone={connected ? "green" : "amber"}>{connected ? "Connected" : "Reconnecting"}</Badge>
+        </nav>
       </header>
 
+      {storageMode === "memory" && (
+        <div className="banner banner-demo" role="note">
+          <strong>Demo storage.</strong> Accounts and game records are kept in server memory and are erased whenever the server restarts.
+        </div>
+      )}
+      {storageMode === "mongodb-unavailable" && (
+        <div className="banner banner-warn" role="note">Accounts are temporarily unavailable. Guest play still works.</div>
+      )}
+      {notice && (
+        <div className="banner" role="status">
+          {notice} <button type="button" className="link-btn" onClick={() => setNotice("")}>Dismiss</button>
+        </div>
+      )}
       {error && <div className="toast" role="alert">{error}</div>}
 
       {!state ? (
-        <Landing onEnter={enterRoom} setError={setError} />
+        <Page route={route} onEnter={enterRoom} setError={setError} />
       ) : (
         <GameRoom
           state={state}
@@ -136,53 +213,24 @@ export function App() {
   );
 }
 
-function Landing({ onEnter, setError }: { onEnter: (response: EnterRoomResponse) => void; setError: (message: string) => void }) {
-  const [name, setName] = useState("");
-  const [roomCode, setRoomCode] = useState("");
-  const canSubmitName = name.trim().length >= 2;
+function Page({ route, onEnter, setError }: { route: Route; onEnter: (response: EnterRoomResponse) => void; setError: (message: string) => void }) {
+  switch (route.name) {
+    case "login":
+      return <AuthPage mode="login" key="login" />;
+    case "register":
+      return <AuthPage mode="register" key="register" />;
+    case "profile":
+      return <ProfilePage />;
+    case "player":
+      return <PlayerPage username={route.username} key={route.username} />;
+    default:
+      return <Dashboard onEnter={onEnter} setError={setError} />;
+  }
+}
 
-  const createRoom = () => {
-    setError("");
-    socket.emit("room:create", { playerName: name }, (response) => {
-      if (response.ok) onEnter(response);
-      else setError(response.message);
-    });
-  };
-  const joinRoom = () => {
-    setError("");
-    socket.emit("room:join", { playerName: name, roomCode }, (response) => {
-      if (response.ok) onEnter(response);
-      else setError(response.message);
-    });
-  };
-
-  return (
-    <>
-      <section className="hero">
-        <div className="hero-copy">
-          <p className="eyebrow">No account. No install. Just a room code.</p>
-          <h1>Find the friend whose word does not fit.</h1>
-          <p>Give a clever one-word clue, read the table, and vote before the Imposter talks their way out.</p>
-        </div>
-        <Panel className="entry-panel">
-          <Input label="Your name" value={name} maxLength={24} onChange={(event) => setName(event.target.value)} placeholder="Aarav" />
-          <Input label="Room code" value={roomCode} maxLength={6} onChange={(event) => setRoomCode(event.target.value.toUpperCase())} placeholder="ABC123" />
-          <div className="button-row">
-            <Button disabled={!canSubmitName} onClick={createRoom}><Play size={18} />Create Room</Button>
-            <Button className="btn-secondary" disabled={!canSubmitName || roomCode.trim().length !== 6} onClick={joinRoom}>Join Room</Button>
-          </div>
-        </Panel>
-      </section>
-      <section className="how">
-        {["Get a secret word", "Submit one clue", "Discuss the clues", "Vote anonymously", "Score across rounds"].map((step, index) => (
-          <div className="step" key={step}>
-            <span>{index + 1}</span>
-            <p>{step}</p>
-          </div>
-        ))}
-      </section>
-    </>
-  );
+function NavLink({ route, current, children }: { route: Route; current: Route; children: string }) {
+  const active = current.name === route.name;
+  return <a className={active ? "nav-link active" : "nav-link"} href={hrefFor(route)} aria-current={active ? "page" : undefined}>{children}</a>;
 }
 
 function GameRoom(props: {
@@ -197,7 +245,8 @@ function GameRoom(props: {
 }) {
   const { state, me, host, secret, setSecret, send, session, leave } = props;
   const timeLeft = useCountdown(state.deadline);
-  const inviteLink = `${window.location.origin}?room=${state.roomCode}`;
+  // Keep the page's own path (e.g. /Who-is-the-Imposter/ on GitHub Pages) so the link opens this app.
+  const inviteLink = inviteLinkFor(state.roomCode);
 
   return (
     <>
@@ -237,10 +286,13 @@ function PlayerRail({ players, host, me, send }: { players: PublicPlayer[]; host
       <h2>Players</h2>
       {players.map((player) => (
         <div className="player-row" key={player.id}>
-          <span className="avatar">{player.initials}</span>
+          <Avatar avatar={player.profile?.avatar} initials={player.initials} />
           <div>
-            <strong>{player.name}</strong>
-            <p>{player.connected ? "Online" : "Disconnected"} · {player.score} pts</p>
+            <strong className="player-name">
+              {player.name}
+              {player.profile && <BadgeCheck size={15} className="verified" aria-label="Signed-in account" />}
+            </strong>
+            <p>{player.connected ? "Online" : "Disconnected"} · {player.score} pts{player.profile ? "" : " · Guest"}</p>
           </div>
           {player.host && <Crown size={16} className="gold" />}
           {!player.host && player.ready && <Check size={16} className="green" />}
